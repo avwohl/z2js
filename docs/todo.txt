@@ -12,3 +12,4 @@ in the zorkie project and are available in source zil/zilf and .z
 
 Nothing exists yet except this file for this project.
 Write the compiler python.
+Update .gitignore for python
