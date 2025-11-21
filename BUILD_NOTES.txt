@@ -1,0 +1,49 @@
+MINIZORK.JS - BUILD NOTES
+=========================
+
+Build Date: 2025-11-21
+Location: test-output/minizork.js
+
+FEATURES:
+---------
+1. Debug output goes to stderr (console.error) instead of stdout
+2. Debug mode can be enabled with --debug flag at command line
+3. Debug traces show PC, Opcode, first 5 locals (L1-L5), and top 3 stack values
+4. Locals are correctly saved/restored across routine calls using .slice()
+
+USAGE:
+------
+Run normally (no debug):
+  node test-output/minizork.js
+
+Run with debug traces:
+  node test-output/minizork.js --debug 2>debug.txt
+
+Run and see only game output:
+  node test-output/minizork.js --debug 2>/dev/null
+
+VERIFICATION:
+-------------
+Debug traces match Frotz reference implementation for:
+- Program Counter (PC)
+- Opcodes
+- Local variables (L1-L5)
+
+Stack display differs due to architectural differences:
+- Frotz uses unified stack (frame data + evaluation stack)
+- z2js uses separate arrays (this.callStack + this.stack)
+This is not a bug - just different memory organization.
+
+COMPILER CHANGES:
+-----------------
+- jsgen.py: All debug output uses console.error
+- jsgen.py: Added --debug flag support in generated code
+- jsgen.py: Debug traces show top 3 stack values instead of count
+- jsgen.py: Added debug logging for save/restore of locals
+- jsgen.py: Locals saved with .slice() to ensure proper copy
+
+FROTZ CHANGES (for comparison testing):
+----------------------------------------
+- process.c: Fixed debug logging to skip invalid root frame locals
+- process.c: Added check for num_locals <= 15 before reading locals
+- process.c: Show top 3 stack values instead of count
