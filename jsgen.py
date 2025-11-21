@@ -96,7 +96,7 @@ class ZMachine {
         this.randomIndex = 0;
 
         // Debug state
-        this.debugMode = true;  // Enable debug to trace instructions
+        this.debugMode = false;  // Enable debug to trace instructions (set to true to enable)
         this.instructionCount = 0;
         this.instructionHistory = [];
         this.maxHistorySize = 100;
@@ -117,7 +117,7 @@ class ZMachine {
         }
         const oldValue = this.memory[addr];
         this.memory[addr] = value & 0xFF;
-        console.log(`[WRITE #${this.instructionCount}] @0x${addr.toString(16).padStart(4,'0')} byte 0x${oldValue.toString(16).padStart(2,'0')} -> 0x${(value & 0xFF).toString(16).padStart(2,'0')}`);
+        console.error(`[WRITE #${this.instructionCount}] @0x${addr.toString(16).padStart(4,'0')} byte 0x${oldValue.toString(16).padStart(2,'0')} -> 0x${(value & 0xFF).toString(16).padStart(2,'0')}`);
     }
 
     writeWord(addr, value) {
@@ -127,7 +127,7 @@ class ZMachine {
         const oldValue = this.readWord(addr);
         this.memory[addr] = (value >> 8) & 0xFF;
         this.memory[addr + 1] = value & 0xFF;
-        console.log(`[WRITE #${this.instructionCount}] @0x${addr.toString(16).padStart(4,'0')} word 0x${oldValue.toString(16).padStart(4,'0')} -> 0x${(value & 0xFFFF).toString(16).padStart(4,'0')}`);
+        console.error(`[WRITE #${this.instructionCount}] @0x${addr.toString(16).padStart(4,'0')} word 0x${oldValue.toString(16).padStart(4,'0')} -> 0x${(value & 0xFFFF).toString(16).padStart(4,'0')}`);
     }
 
     // Stack operations
@@ -157,7 +157,11 @@ class ZMachine {
             return this.locals[varNum - 1] || 0;
         } else {
             const addr = GLOBALS_ADDR + (varNum - 16) * 2;
-            return this.readWord(addr);
+            const value = this.readWord(addr);
+            if (this.instructionCount === 132 && varNum === 131) {
+                console.error(`[GETVAR #132] Reading var ${varNum} (global ${varNum - 16}) from address 0x${addr.toString(16)}, value=0x${value.toString(16)}`);
+            }
+            return value;
         }
     }
 
@@ -170,7 +174,7 @@ class ZMachine {
         } else {
             const addr = GLOBALS_ADDR + (varNum - 16) * 2;
             if (this.instructionCount < 50) {
-                console.log(`[SETVAR #${this.instructionCount}] PC=0x${this.pc.toString(16)} Setting global ${varNum-16} (varNum=${varNum}, addr=0x${addr.toString(16)}) to 0x${value.toString(16)}`);
+                console.error(`[SETVAR #${this.instructionCount}] PC=0x${this.pc.toString(16)} Setting global ${varNum-16} (varNum=${varNum}, addr=0x${addr.toString(16)}) to 0x${value.toString(16)}`);
             }
             this.writeWord(addr, value);
         }
@@ -204,10 +208,14 @@ class ZMachine {
     // Z-String decoding
     decodeZString(addr) {
         const startAddr = addr;
+        // A2 alphabet varies by version - V1 has different punctuation
+        const a2_v1 = " 0123456789.,!?_#'\\"/<-:()";  // V1: has < instead of \\n
+        const a2_v2plus = " \\n0123456789.,!?_#'\\"/-:()";  // V2+: has \\n and - in different position
+
         const alphabets = [
             "abcdefghijklmnopqrstuvwxyz",      // A0 (default)
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ",      // A1
-            " \\n0123456789.,!?_#'\\"/-:()"    // A2
+            VERSION === 1 ? a2_v1 : a2_v2plus  // A2 (version-specific)
         ];
 
         let result = "";
@@ -227,12 +235,12 @@ class ZMachine {
             ];
 
             if (debugThis) {
-                console.log(`  Word 0x${word.toString(16)}: chars=[${chars.join(', ')}]`);
+                console.error(`  Word 0x${word.toString(16)}: chars=[${chars.join(', ')}]`);
             }
 
             for (let c of chars) {
                 if (debugThis) {
-                    console.log(`    Char ${c}: alphabet=${alphabet}, abbrev=${abbrev}, zsciiHigh=${zsciiHigh}`);
+                    console.error(`    Char ${c}: alphabet=${alphabet}, abbrev=${abbrev}, zsciiHigh=${zsciiHigh}`);
                 }
 
                 if (zsciiHigh === -2) {
@@ -266,13 +274,15 @@ class ZMachine {
                     // Don't reset alphabet yet
                 } else if (c >= 6) {
                     const idx = c - 6;
+                    let ch = null;
                     if (alphabet === 0 && idx < alphabets[0].length) {
-                        result += alphabets[0][idx];
+                        ch = alphabets[0][idx];
                     } else if (alphabet === 1 && idx < alphabets[1].length) {
-                        result += alphabets[1][idx];
+                        ch = alphabets[1][idx];
                     } else if (alphabet === 2 && idx < alphabets[2].length) {
-                        result += alphabets[2][idx];
+                        ch = alphabets[2][idx];
                     }
+                    if (ch !== null) result += ch;
                     alphabet = 0;
                 }
             }
@@ -677,33 +687,20 @@ class ZMachine {
         return 0;
     }
 
-    // Input handling (simplified)
+    // Input handling
     read(textBuffer, parseBuffer) {
-        // This is a simplified version that waits for input
-        // In a real implementation, this would be async
-        console.log(`[READ] BEFORE: textBuffer=0x${textBuffer.toString(16)}, parseBuffer=0x${parseBuffer.toString(16)}, PC=0x${this.pc.toString(16)}`);
-        console.log(`[READ] Text buffer max: ${this.readByte(textBuffer)}`);
-        console.log(`[READ] Parse buffer max: ${this.readByte(parseBuffer)}`);
-        console.log(`[READ] Call depth: ${this.callStack.length}, Local vars: ${this.locals.slice(0, 5).map((v,i) => `L${i+1}=${v !== null && v !== undefined ? '0x'+v.toString(16) : 'null'}`).join(' ')}`);
-        console.log(`[READ] Call stack frames:`);
-        for (let i = 0; i < this.callStack.length; i++) {
-            const frame = this.callStack[i];
-            console.log(`  Frame ${i}: returnPC=0x${frame.returnPC.toString(16)}, numLocals=${frame.numLocals}, storeVar=${frame.storeVar}`);
+        if (this.debugMode) {
+            console.error(`[READ] textBuffer=0x${textBuffer.toString(16)}, parseBuffer=0x${parseBuffer.toString(16)}`);
         }
-
-        // Check global variable 25 (var 0x29 = 16 + 25 = 41)
-        const global25Addr = GLOBALS_ADDR + 25 * 2;
-        const global25Value = this.readWord(global25Addr);
-        console.log(`[READ] Global var 25 (addr 0x${global25Addr.toString(16)}) = 0x${global25Value.toString(16)}`);
 
         this.running = false;
 
-        // Set up input handler
+        // Set up the input handler - will be called when input arrives
         const self = this;
-        const oldInputCallback = this.inputCallback;
-
         this.inputCallback = function(input) {
-            console.log(`[INPUT] Received: "${input}", PC: 0x${self.pc.toString(16)}, stack: ${self.stack.length}`);
+            if (self.debugMode) {
+                console.error(`[INPUT] Received: "${input}"`);
+            }
 
             // Store input in text buffer
             const maxLen = self.readByte(textBuffer);
@@ -723,26 +720,12 @@ class ZMachine {
 
             // Tokenize if parse buffer provided
             if (parseBuffer && parseBuffer !== 0) {
-                console.log(`[INPUT] Tokenizing...`);
                 self.tokenize(textBuffer, parseBuffer);
-
-                // Debug: dump what we wrote
-                const numWords = self.readByte(parseBuffer + 1);
-                console.log(`[INPUT] Wrote ${numWords} words to parse buffer`);
-                for (let i = 0; i < numWords; i++) {
-                    const entryAddr = parseBuffer + 2 + i * 4;
-                    const dictAddr = self.readWord(entryAddr);
-                    const len = self.readByte(entryAddr + 2);
-                    const pos = self.readByte(entryAddr + 3);
-                    console.log(`[INPUT]   Word ${i}: dictAddr=0x${dictAddr.toString(16)}, len=${len}, pos=${pos}`);
-                }
             }
 
-            // Restore old callback and continue
-            self.inputCallback = oldInputCallback;
+            // Clear the callback and continue execution
+            self.inputCallback = null;
             self.running = true;
-            console.log(`[INPUT] About to restart, PC: 0x${self.pc.toString(16)}, stack: ${self.stack.length}`);
-            console.log(`[INPUT] Call depth: ${self.callStack.length}, Local vars: ${self.locals.slice(0, 5).map((v,i) => `L${i+1}=${v !== null && v !== undefined ? '0x'+v.toString(16) : 'null'}`).join(' ')}`);
             setTimeout(() => self.run(), 0);
         };
     }
@@ -750,8 +733,8 @@ class ZMachine {
     // Dictionary and tokenization
     tokenize(textBuffer, parseBuffer) {
         // DEBUG: Dump parse buffer BEFORE tokenization
-        console.log(`[TOKENIZE] Parse buffer BEFORE (at 0x${parseBuffer.toString(16)}):`);
-        console.log(`[TOKENIZE] Text buffer at 0x${textBuffer.toString(16)}`);
+        console.error(`[TOKENIZE] Parse buffer BEFORE (at 0x${parseBuffer.toString(16)}):`);
+        console.error(`[TOKENIZE] Text buffer at 0x${textBuffer.toString(16)}`);
 
         // Show what's currently in the parse buffer
         for (let i = 0; i < 3; i++) {
@@ -759,7 +742,7 @@ class ZMachine {
             const addr = this.readWord(entryAddr);
             const len = this.readByte(entryAddr + 2);
             const pos = this.readByte(entryAddr + 3);
-            console.log(`[TOKENIZE]   Entry ${i}: addr=0x${addr.toString(16)}, len=${len}, pos=${pos}`);
+            console.error(`[TOKENIZE]   Entry ${i}: addr=0x${addr.toString(16)}, len=${len}, pos=${pos}`);
         }
 
         // Simplified tokenization
@@ -794,7 +777,7 @@ class ZMachine {
             const word = words[i];
             const dictAddr = this.lookupWord(word);
 
-            console.log(`[TOKENIZE] Word ${i}: "${word}" -> dictAddr=0x${dictAddr.toString(16)}`);
+            console.error(`[TOKENIZE] Word ${i}: "${word}" -> dictAddr=0x${dictAddr.toString(16)}`);
 
             // Find word position in text (1-indexed)
             const wordStart = text.indexOf(word, textPos);
@@ -807,20 +790,20 @@ class ZMachine {
             this.writeByte(entryAddr + 2, word.length);
             this.writeByte(entryAddr + 3, position);
 
-            console.log(`[TOKENIZE]   Wrote to 0x${entryAddr.toString(16)}: addr=0x${dictAddr.toString(16)}, len=${word.length}, pos=${position}`);
+            console.error(`[TOKENIZE]   Wrote to 0x${entryAddr.toString(16)}: addr=0x${dictAddr.toString(16)}, len=${word.length}, pos=${position}`);
         }
 
         // DEBUG: Dump parse buffer contents
-        console.log(`[TOKENIZE] Parse buffer dump (buffer starts at 0x${parseBuffer.toString(16)}):`);
-        console.log(`[TOKENIZE]   Max words: ${this.readByte(parseBuffer)}`);
-        console.log(`[TOKENIZE]   Num words: ${this.readByte(parseBuffer + 1)}`);
+        console.error(`[TOKENIZE] Parse buffer dump (buffer starts at 0x${parseBuffer.toString(16)}):`);
+        console.error(`[TOKENIZE]   Max words: ${this.readByte(parseBuffer)}`);
+        console.error(`[TOKENIZE]   Num words: ${this.readByte(parseBuffer + 1)}`);
         const numWords = this.readByte(parseBuffer + 1);
         for (let i = 0; i < Math.max(numWords, 3); i++) {  // Show at least 3 entries
             const entryAddr = parseBuffer + 2 + i * 4;
             const addr = this.readWord(entryAddr);
             const len = this.readByte(entryAddr + 2);
             const pos = this.readByte(entryAddr + 3);
-            console.log(`[TOKENIZE]   Entry ${i} at 0x${entryAddr.toString(16)}: addr=0x${addr.toString(16)}, len=${len}, pos=${pos}`);
+            console.error(`[TOKENIZE]   Entry ${i} at 0x${entryAddr.toString(16)}: addr=0x${addr.toString(16)}, len=${len}, pos=${pos}`);
         }
     }
 
@@ -943,20 +926,14 @@ ZMachine.prototype.executeInstruction = function() {
 
     // Add comprehensive debug logging matching frotz output format
     if (this.debugMode) {
-        // Get local variables (if in a routine)
-        let l1 = 0, l2 = 0, l3 = 0, l4 = 0, l5 = 0;
-        if (this.callStack.length > 0) {
-            const frame = this.callStack[this.callStack.length - 1];
-            if (frame.locals.length > 0) l1 = frame.locals[0] || 0;
-            if (frame.locals.length > 1) l2 = frame.locals[1] || 0;
-            if (frame.locals.length > 2) l3 = frame.locals[2] || 0;
-            if (frame.locals.length > 3) l4 = frame.locals[3] || 0;
-            if (frame.locals.length > 4) l5 = frame.locals[4] || 0;
-        }
+        // Get local variables from current frame
+        const l1 = this.locals[0] || 0;
+        const l2 = this.locals[1] || 0;
+        const l3 = this.locals[2] || 0;
+        const l4 = this.locals[3] || 0;
+        const l5 = this.locals[4] || 0;
 
-        const stackTop = this.stack.length > 0 ? this.stack[this.stack.length - 1] : 0;
-
-        console.log(`[STEP ${this.instructionCount}] PC=0x${instrPC.toString(16).padStart(4, '0')} Op=0x${opcode.toString(16).padStart(2, '0')} L1=0x${l1.toString(16).padStart(4, '0')} L2=0x${l2.toString(16).padStart(4, '0')} L3=0x${l3.toString(16).padStart(4, '0')} L4=0x${l4.toString(16).padStart(4, '0')} L5=0x${l5.toString(16).padStart(4, '0')} Stack(${this.stack.length}):0x${stackTop.toString(16).padStart(4, '0')}`);
+        console.error(`[STEP ${this.instructionCount}] PC=0x${instrPC.toString(16).padStart(4, '0')} Op=0x${opcode.toString(16).padStart(2, '0')} L1=0x${l1.toString(16).padStart(4, '0')} L2=0x${l2.toString(16).padStart(4, '0')} L3=0x${l3.toString(16).padStart(4, '0')} L4=0x${l4.toString(16).padStart(4, '0')} L5=0x${l5.toString(16).padStart(4, '0')}`);
     }
 
     // Decode instruction form
@@ -1163,7 +1140,7 @@ ZMachine.prototype.execute1OP = function(opcode, operand) {
             {
                 const varNum = value;
                 if (this.debugMode && this.instructionCount < 20) {
-                    console.log(`  LOAD from var ${varNum} (stack size: ${this.stack.length})`);
+                    console.error(`  LOAD from var ${varNum} (stack size: ${this.stack.length})`);
                 }
                 const val = this.getVariable(varNum);
                 this.store(val);
@@ -1196,9 +1173,16 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
         case 0x01: // je (jump if equal)
             {
                 const result = (val1 === val2);
-                if (this.instructionCount >= 280 && this.instructionCount <= 285) {
-                    console.log(`[JE at inst ${this.instructionCount}] val1=0x${val1.toString(16)} val2=0x${val2.toString(16)} result=${result}`);
-                    console.log(`[JE] Operands were: op1=${JSON.stringify(operand1)} op2=${JSON.stringify(operand2)}`);
+                if (this.instructionCount === 132 || (this.instructionCount >= 280 && this.instructionCount <= 285)) {
+                    console.error(`[JE at inst ${this.instructionCount}] val1=0x${val1.toString(16)} val2=0x${val2.toString(16)} result=${result}`);
+                    console.error(`[JE] Operands were: op1=${JSON.stringify(operand1)} op2=${JSON.stringify(operand2)}`);
+                    if (this.instructionCount === 132) {
+                        // Operand1 is ["var", 131] = global 115
+                        const globalAddr = 0x2b0 + 115 * 2;
+                        const globalValue = this.readWord(globalAddr);
+                        console.error(`[JE #132] Global 115 (var 131) is at address 0x${globalAddr.toString(16)}, contains 0x${globalValue.toString(16)}`);
+                        console.error(`[JE #132] Local 1 (var 1) contains 0x${this.locals[0].toString(16)}`);
+                    }
                 }
                 this.branch(result);
             }
@@ -1251,9 +1235,9 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
                 // Log tests at 0x11c8 specifically
                 const testPC = this.pc - 3;
                 if (testPC === 0x11c8 || this.debugMode) {
-                    console.log(`[TEST at 0x${testPC.toString(16)}] val1=0x${val1.toString(16)} val2=0x${val2.toString(16)} result=${testResult}`);
-                    console.log(`[TEST] This is testing (global_25 & global_105) === global_105`);
-                    console.log(`[TEST] If FALSE, will branch. If TRUE, will continue to next instruction.`);
+                    console.error(`[TEST at 0x${testPC.toString(16)}] val1=0x${val1.toString(16)} val2=0x${val2.toString(16)} result=${testResult}`);
+                    console.error(`[TEST] This is testing (global_25 & global_105) === global_105`);
+                    console.error(`[TEST] If FALSE, will branch. If TRUE, will continue to next instruction.`);
                 }
                 this.branch(testResult);
             }
@@ -1370,15 +1354,18 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
     }
 };
 
-// 2OP Instructions (Variable form) - just redirects to execute2OP
+// 2OP Instructions (Variable form) - reads operands and redirects to execute2OP
+// Note: Some 2OP instructions like 'je' can take more than 2 operands in variable form!
 ZMachine.prototype.execute2OPVar = function(opcode) {
     // Read operand types
     const types = this.readByte(this.pc);
     this.pc++;
 
     const operands = [];
-    for (let i = 0; i < 2; i++) {
+    // Read up to 4 operands (je and some others can use all 4)
+    for (let i = 0; i < 4; i++) {
         const opType = (types >> (6 - i * 2)) & 0x03;
+        if (opType === 3) break; // No more operands
         if (opType === 0) {
             operands.push(this.readWord(this.pc));
             this.pc += 2;
@@ -1391,6 +1378,22 @@ ZMachine.prototype.execute2OPVar = function(opcode) {
         }
     }
 
+    // For je opcode (0x01), handle multiple operands specially
+    if (opcode === 0x01 && operands.length > 2) {
+        // je with more than 2 operands: check if first equals any of the rest
+        const val1 = this.getOperand(operands[0]);
+        let result = false;
+        for (let i = 1; i < operands.length; i++) {
+            if (val1 === this.getOperand(operands[i])) {
+                result = true;
+                break;
+            }
+        }
+        this.branch(result);
+        return;
+    }
+
+    // For other 2OP instructions, just use first 2 operands
     return this.execute2OP(opcode, operands[0], operands[1]);
 };
 
@@ -1420,7 +1423,7 @@ ZMachine.prototype.executeVAR = function(opcode) {
     const values = operands.map(op => this.getOperand(op));
 
     if (this.debugMode && this.instructionCount < 20 && (opcode === 0x00 || opcode === 0x01)) {
-        console.log(`  -> VAR operand types: 0x${types.toString(16)}, operands:`, operands, 'values:', values);
+        console.error(`  -> VAR operand types: 0x${types.toString(16)}, operands:`, operands, 'values:', values);
     }
 
     switch (opcode) {
@@ -1431,7 +1434,7 @@ ZMachine.prototype.executeVAR = function(opcode) {
                 const storeVar = this.readByte(this.pc);
                 this.pc++;
                 if (this.debugMode && this.instructionCount < 20) {
-                    console.log(`  CALL routine 0x${packedAddr.toString(16)} with args [${args.map(a => '0x' + a.toString(16)).join(', ')}] store to var ${storeVar}`);
+                    console.error(`  CALL routine 0x${packedAddr.toString(16)} with args [${args.map(a => '0x' + a.toString(16)).join(', ')}] store to var ${storeVar}`);
                 }
                 this.callRoutine(packedAddr, args, storeVar);
             }
@@ -1440,7 +1443,7 @@ ZMachine.prototype.executeVAR = function(opcode) {
             {
                 const addr = values[0] + 2 * values[1];
                 if (this.instructionCount >= 275) {
-                    console.log(`[STOREW at inst ${this.instructionCount}] addr=0x${addr.toString(16)} value=0x${values[2].toString(16)}`);
+                    console.error(`[STOREW at inst ${this.instructionCount}] addr=0x${addr.toString(16)} value=0x${values[2].toString(16)}`);
                 }
                 this.writeWord(addr, values[2]);
             }
@@ -1455,7 +1458,9 @@ ZMachine.prototype.executeVAR = function(opcode) {
             this.putProperty(values[0], values[1], values[2]);
             break;
         case 0x04: // read (sread in V5+)
-            console.log(`[VAR 0x04 READ] Called with values[0]=0x${values[0].toString(16)}, values[1]=0x${values[1].toString(16)}`);
+            if (this.debugMode) {
+                console.error(`[VAR 0x04 READ] Called with values[0]=0x${values[0].toString(16)}, values[1]=0x${values[1].toString(16)}`);
+            }
             this.read(values[0], values[1]);
             break;
         case 0x05: // print_char
@@ -1584,10 +1589,14 @@ ZMachine.prototype.branch = function(condition) {
     // Save the address of the branch data for offset calculation
     const branchDataAddr = this.pc;
 
+    if (this.instructionCount === 132) {
+        console.error(`[BRANCH DEBUG #132] branchDataAddr=0x${branchDataAddr.toString(16)}, condition=${condition}`);
+    }
+
     const branchByte = this.readByte(this.pc);
     if (branchDataAddr === 0x11cb) {
-        console.log(`[BRANCH DEBUG] At 0x${branchDataAddr.toString(16)}: byte1=0x${branchByte.toString(16)}, byte2=0x${this.readByte(this.pc+1).toString(16)}`);
-        console.log(`[BRANCH DEBUG] Expected: byte1=0x35, byte2=0x81 (from original file)`);
+        console.error(`[BRANCH DEBUG] At 0x${branchDataAddr.toString(16)}: byte1=0x${branchByte.toString(16)}, byte2=0x${this.readByte(this.pc+1).toString(16)}`);
+        console.error(`[BRANCH DEBUG] Expected: byte1=0x35, byte2=0x81 (from original file)`);
     }
     this.pc++;
 
@@ -1606,8 +1615,9 @@ ZMachine.prototype.branch = function(condition) {
         this.pc++;
         offsetSize = 2;  // 2 bytes total
 
-        if (this.debugMode && this.instructionCount >= 295) {
-            console.log(`[BRANCH] branchByte=0x${branchByte.toString(16)} secondByte=0x${secondByte.toString(16)} offset=0x${offset.toString(16)}=${offset}`);
+        if (this.instructionCount === 132 || (this.debugMode && this.instructionCount >= 295)) {
+            console.error(`[BRANCH #${this.instructionCount}] branchByte=0x${branchByte.toString(16)} secondByte=0x${secondByte.toString(16)} offset=0x${offset.toString(16)}=${offset}`);
+            console.error(`[BRANCH #${this.instructionCount}] this.pc after reading branch data = 0x${this.pc.toString(16)}`);
         }
 
         if (offset & 0x2000) {
@@ -1615,6 +1625,11 @@ ZMachine.prototype.branch = function(condition) {
         }
         // Convert to signed
         if (offset > 32767) offset -= 65536;
+    }
+
+    if (this.instructionCount === 132) {
+        console.error(`[BRANCH DEBUG #132] branchByte=0x${branchByte.toString(16)}, branchOnTrue=${branchOnTrue}, offset=${offset}, offsetSize=${offsetSize}`);
+        console.error(`[BRANCH DEBUG #132] condition=${condition}, will${condition === branchOnTrue ? '' : ' NOT'} take branch`);
     }
 
     if (condition === branchOnTrue) {
@@ -1627,22 +1642,25 @@ ZMachine.prototype.branch = function(condition) {
             // The offset of 2 means "branch to the instruction immediately after this one"
             // So we calculate: (address of branch data) + (size of branch data) + (offset) - 2
             const newPC = branchDataAddr + offsetSize + offset - 2;
+
+            if (this.instructionCount === 132) {
+                console.error(`[BRANCH DEBUG #132] Taking branch: newPC = 0x${branchDataAddr.toString(16)} + ${offsetSize} + ${offset} - 2 = 0x${newPC.toString(16)}`);
+            }
             if (this.debugMode && this.instructionCount >= 295) {
                 const altPC = this.pc + offset - 2;  // Alternative: PC is already after branch data
-                console.log(`[BRANCH] Taking branch: branchDataAddr=0x${branchDataAddr.toString(16)} offsetSize=${offsetSize} offset=${offset}`);
-                console.log(`[BRANCH]   Formula 1 (current): branchDataAddr + offsetSize + offset - 2 = 0x${newPC.toString(16)}`);
-                console.log(`[BRANCH]   Formula 2 (alt): PC + offset - 2 = 0x${altPC.toString(16)}`);
-                console.log(`[BRANCH]   Current PC after reading branch data: 0x${this.pc.toString(16)}`);
+                console.error(`[BRANCH] Taking branch: branchDataAddr=0x${branchDataAddr.toString(16)} offsetSize=${offsetSize} offset=${offset}`);
+                console.error(`[BRANCH]   Formula 1 (current): branchDataAddr + offsetSize + offset - 2 = 0x${newPC.toString(16)}`);
+                console.error(`[BRANCH]   Formula 2 (alt): PC + offset - 2 = 0x${altPC.toString(16)}`);
+                console.error(`[BRANCH]   Current PC after reading branch data: 0x${this.pc.toString(16)}`);
             }
 
-            // Safety check: don't branch to header/data areas
-            if (newPC < HIGH_MEMORY) {
-                console.error(`[BRANCH] WARNING: Attempted to branch to 0x${newPC.toString(16)} which is below high memory (0x${HIGH_MEMORY.toString(16)})`);
+            // Safety check: don't branch to header area (first 64 bytes)
+            if (newPC < 0x40) {
+                console.error(`[BRANCH] WARNING: Attempted to branch to 0x${newPC.toString(16)} which is in the header`);
                 console.error(`[BRANCH] This usually indicates a bug in parsing or variable handling`);
                 console.error(`[BRANCH] Branch from 0x${branchDataAddr.toString(16)} with offset ${offset}`);
                 console.error(`[BRANCH] This is likely a parse error - returning 0 to indicate failure`);
-                // For now, treat this as a catastrophic error and return false from the routine
-                // This is better than jumping to invalid code
+                // Treat this as a catastrophic error and return false from the routine
                 this.returnFromRoutine(0);
             } else {
                 this.pc = newPC;
@@ -1664,6 +1682,11 @@ ZMachine.prototype.returnFromRoutine = function(value) {
     }
 
     const frame = this.callStack.pop();
+
+    if (this.debugMode && this.instructionCount <= 15) {
+        console.error(`[RETURN at inst ${this.instructionCount}] Restoring locals: ${frame.locals.slice(0, 5).map((v,i) => `L${i+1}=0x${(v||0).toString(16).padStart(4,'0')}`).join(' ')}`);
+    }
+
     this.pc = frame.returnPC;
     this.locals = frame.locals;
 
@@ -1701,7 +1724,7 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
     // DEBUG: Log calls after input
     if (this.instructionCount >= 275 && this.instructionCount <= 300) {
         const callPC = this.pc - 4;  // Approximate
-        console.log(`[CALL at inst ${this.instructionCount} PC~0x${callPC.toString(16)}] packedAddr=0x${packedAddr.toString(16)} -> addr=0x${addr.toString(16)}`);
+        console.error(`[CALL at inst ${this.instructionCount} PC~0x${callPC.toString(16)}] packedAddr=0x${packedAddr.toString(16)} -> addr=0x${addr.toString(16)}`);
     }
 
     // Sanity check - routine address should be at least in static memory region
@@ -1717,7 +1740,7 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
     const numLocals = this.readByte(addr);
 
     if (this.debugMode && this.instructionCount < 20) {
-        console.log(`  -> Unpacked to addr 0x${addr.toString(16)}, numLocals=${numLocals}`);
+        console.error(`  -> Unpacked to addr 0x${addr.toString(16)}, numLocals=${numLocals}`);
     }
 
     // Sanity check - Z-Machine routines can have at most 15 locals
@@ -1725,10 +1748,14 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
         throw new Error(`Invalid routine at 0x${addr.toString(16)} (packed: 0x${packedAddr.toString(16)}): numLocals=${numLocals} exceeds maximum of 15`);
     }
 
-    // Save current state
+    // Save current state (make a copy of locals array!)
+    if (this.debugMode && this.instructionCount <= 15) {
+        console.error(`[CALL-SAVE at inst ${this.instructionCount}] Saving locals: ${this.locals.slice(0, 5).map((v,i) => `L${i+1}=0x${(v||0).toString(16).padStart(4,'0')}`).join(' ')}`);
+    }
+
     this.callStack.push({
         returnPC: this.pc,
-        locals: this.locals,
+        locals: this.locals.slice(),
         numLocals: numLocals,
         storeVar: storeVar
     });
@@ -1740,14 +1767,14 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
     if (VERSION <= 4) {
         // Read default local values
         if (this.instructionCount >= 180 && this.instructionCount <= 190 && numLocals >= 14) {
-            console.log(`[CALL ${this.instructionCount}] Reading defaults from 0x${addr.toString(16)}:`);
-            console.log(`[CALL ${this.instructionCount}] NumLocals byte at 0x${addr.toString(16)}: 0x${this.readByte(addr).toString(16)}`);
+            console.error(`[CALL ${this.instructionCount}] Reading defaults from 0x${addr.toString(16)}:`);
+            console.error(`[CALL ${this.instructionCount}] NumLocals byte at 0x${addr.toString(16)}: 0x${this.readByte(addr).toString(16)}`);
             for (let i = 0; i < Math.min(3, numLocals); i++) {
                 const offset = addr + 1 + i * 2;
                 const b1 = this.readByte(offset);
                 const b2 = this.readByte(offset + 1);
                 const word = this.readWord(offset);
-                console.log(`[CALL ${this.instructionCount}] L${i+1} at 0x${offset.toString(16)}: bytes=${b1.toString(16)} ${b2.toString(16)} word=0x${word.toString(16)}`);
+                console.error(`[CALL ${this.instructionCount}] L${i+1} at 0x${offset.toString(16)}: bytes=${b1.toString(16)} ${b2.toString(16)} word=0x${word.toString(16)}`);
             }
         }
         for (let i = 0; i < numLocals; i++) {
@@ -1764,14 +1791,14 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
 
     // Copy arguments to locals
     if (true) {
-        console.log(`[CALL ${this.instructionCount}] To addr 0x${addr.toString(16)}: numLocals=${numLocals}, args=[${args.map(a => '0x'+a.toString(16)).join(', ')}]`);
-        console.log(`[CALL ${this.instructionCount}] Defaults: ${this.locals.slice(0, numLocals).map((v,i) => `L${i+1}=0x${v.toString(16)}`).join(' ')}`);
+        console.error(`[CALL ${this.instructionCount}] To addr 0x${addr.toString(16)}: numLocals=${numLocals}, args=[${args.map(a => '0x'+a.toString(16)).join(', ')}]`);
+        console.error(`[CALL ${this.instructionCount}] Defaults: ${this.locals.slice(0, numLocals).map((v,i) => `L${i+1}=0x${v.toString(16)}`).join(' ')}`);
     }
     for (let i = 0; i < args.length && i < numLocals; i++) {
         this.locals[i] = args[i];
     }
     if (true) {
-        console.log(`[CALL ${this.instructionCount}] Final:    ${this.locals.slice(0, numLocals).map((v,i) => `L${i+1}=0x${v.toString(16)}`).join(' ')}`);
+        console.error(`[CALL ${this.instructionCount}] Final:    ${this.locals.slice(0, numLocals).map((v,i) => `L${i+1}=0x${v.toString(16)}`).join(' ')}`);
     }
 };'''
 
@@ -1841,20 +1868,20 @@ ZMachine.prototype.saveCrashDump = function(dump) {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        console.log('Crash dump saved to downloads');
+        console.error('Crash dump saved to downloads');
     } else if (typeof require !== "undefined") {
         // Node.js environment
         try {
             const fs = require('fs');
             const filename = `zmachine-crash-${Date.now()}.json`;
             fs.writeFileSync(filename, json);
-            console.log(`Crash dump saved to ${filename}`);
+            console.error(`Crash dump saved to ${filename}`);
         } catch (e) {
             console.error('Failed to save crash dump:', e.message);
-            console.log('Crash dump:', json);
+            console.error('Crash dump:', json);
         }
     } else {
-        console.log('Crash dump:', json);
+        console.error('Crash dump:', json);
     }
 };
 
@@ -1881,7 +1908,7 @@ ZMachine.prototype.run = function() {
     const entryStack = this.stack.length;
     const entryInst = this.instructionCount;
     this.running = true;
-    console.log(`[RUN] Entry: PC=0x${entryPC.toString(16)} stack=${entryStack} inst=${entryInst}`);
+    console.error(`[RUN] Entry: PC=0x${entryPC.toString(16)} stack=${entryStack} inst=${entryInst}`);
 
     while (this.running && !this.finished) {
         try {
@@ -1895,7 +1922,7 @@ ZMachine.prototype.run = function() {
                         `L${i+1}=${v !== null && v !== undefined ? '0x'+v.toString(16).padStart(4,'0') : 'null'}`
                     ).join(' ');
                     const stackTop = this.stack.length > 0 ? '0x'+this.stack[this.stack.length-1].toString(16).padStart(4,'0') : 'empty';
-                    console.log(`[STEP ${this.instructionCount}] PC=0x${currentPC.toString(16).padStart(4,'0')} Op=0x${opcode.toString(16).padStart(2,'0')} ${locals} Stack(${this.stack.length}):${stackTop}`);
+                    console.error(`[STEP ${this.instructionCount}] PC=0x${currentPC.toString(16).padStart(4,'0')} Op=0x${opcode.toString(16).padStart(2,'0')} ${locals} Stack(${this.stack.length}):${stackTop}`);
                 }
                 this.instructionCount++;
             }
@@ -1934,9 +1961,9 @@ ZMachine.prototype.run = function() {
     }
 
     if (this.finished) {
-        console.log('\\n[Z-Machine execution completed]');
+        console.error('\\n[Z-Machine execution completed]');
     } else if (!this.running) {
-        console.log('\\n[Z-Machine execution stopped]');
+        console.error('\\n[Z-Machine execution stopped]');
     }
 };
 
@@ -1960,7 +1987,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     // Auto-run if executed directly (not required as a module)
     if (require.main === module) {
-        console.log('Starting Z-Machine game...\\n');
+        console.error('Starting Z-Machine game...\\n');
         const readline = require('readline');
         const rl = readline.createInterface({
             input: process.stdin,
@@ -1969,41 +1996,51 @@ if (typeof module !== "undefined" && module.exports) {
 
         const m = createZMachine();
 
+        // Check for --debug flag
+        if (process.argv.includes('--debug')) {
+            m.debugMode = true;
+            console.error('[DEBUG MODE ENABLED]\\n');
+        }
+
         // Output handler
         m.outputCallback = (text) => {
             process.stdout.write(text);
         };
 
-        // Input handler
-        m.inputCallback = (command) => {
-            // This will be called when game needs input
-            console.log(`[ORIGINAL CALLBACK] Called with command: "${command}", PC: 0x${m.pc.toString(16)}`);
-            rl.question('\\n> ', (answer) => {
-                console.log(`[ORIGINAL CALLBACK] Got answer: "${answer}"`);
-                if (m.inputCallback) {
-                    m.inputCallback(answer);
-                }
-            });
-        };
+        // Input handler will be set by read() opcode when needed
+        m.inputCallback = null;
+
+        // Input polling function
+        function checkForInput() {
+            if (m.inputCallback && !m.running) {
+                // Game is waiting for input
+                rl.question('\\n> ', (answer) => {
+                    if (m.inputCallback) {
+                        m.inputCallback(answer);
+                        // Check again after execution
+                        setTimeout(checkForInput, 10);
+                    }
+                });
+            } else if (m.finished) {
+                // Game is done
+                rl.close();
+            } else if (!m.running) {
+                // Check again soon
+                setTimeout(checkForInput, 10);
+            } else {
+                // Still running, check again
+                setTimeout(checkForInput, 10);
+            }
+        }
 
         // Start the game
         try {
             m.run();
-
-            // If game stopped and waiting for input
-            if (!m.finished && !m.running) {
-                console.log('\\n[Game is waiting for input]');
-                rl.question('\\n> ', (answer) => {
-                    if (m.inputCallback) {
-                        m.inputCallback(answer);
-                    }
-                    rl.close();
-                });
-            } else {
-                rl.close();
-            }
+            // Start polling for input
+            setTimeout(checkForInput, 10);
         } catch (e) {
             console.error('Fatal error:', e.message);
+            console.error(e.stack);
             rl.close();
             process.exit(1);
         }
