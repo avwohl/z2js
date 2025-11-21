@@ -751,6 +751,9 @@ class ZMachine {
     tokenize(textBuffer, parseBuffer) {
         // DEBUG: Dump parse buffer BEFORE tokenization
         console.log(`[TOKENIZE] Parse buffer BEFORE (at 0x${parseBuffer.toString(16)}):`);
+        console.log(`[TOKENIZE] Text buffer at 0x${textBuffer.toString(16)}`);
+
+        // Show what's currently in the parse buffer
         for (let i = 0; i < 3; i++) {
             const entryAddr = parseBuffer + 2 + i * 4;
             const addr = this.readWord(entryAddr);
@@ -938,8 +941,22 @@ ZMachine.prototype.executeInstruction = function() {
     const opcode = this.readByte(this.pc);
     this.pc++;
 
-    if (this.debugMode && this.instructionCount >= 150 && this.instructionCount < 170) {
-        console.log(`[${this.instructionCount}] PC:0x${instrPC.toString(16)} Opcode:0x${opcode.toString(16)} Stack:${this.stack.length} Calls:${this.callStack.length}`);
+    // Add comprehensive debug logging matching frotz output format
+    if (this.debugMode) {
+        // Get local variables (if in a routine)
+        let l1 = 0, l2 = 0, l3 = 0, l4 = 0, l5 = 0;
+        if (this.callStack.length > 0) {
+            const frame = this.callStack[this.callStack.length - 1];
+            if (frame.locals.length > 0) l1 = frame.locals[0] || 0;
+            if (frame.locals.length > 1) l2 = frame.locals[1] || 0;
+            if (frame.locals.length > 2) l3 = frame.locals[2] || 0;
+            if (frame.locals.length > 3) l4 = frame.locals[3] || 0;
+            if (frame.locals.length > 4) l5 = frame.locals[4] || 0;
+        }
+
+        const stackTop = this.stack.length > 0 ? this.stack[this.stack.length - 1] : 0;
+
+        console.log(`[STEP ${this.instructionCount}] PC=0x${instrPC.toString(16).padStart(4, '0')} Op=0x${opcode.toString(16).padStart(2, '0')} L1=0x${l1.toString(16).padStart(4, '0')} L2=0x${l2.toString(16).padStart(4, '0')} L3=0x${l3.toString(16).padStart(4, '0')} L4=0x${l4.toString(16).padStart(4, '0')} L5=0x${l5.toString(16).padStart(4, '0')} Stack(${this.stack.length}):0x${stackTop.toString(16).padStart(4, '0')}`);
     }
 
     // Decode instruction form
@@ -1617,7 +1634,19 @@ ZMachine.prototype.branch = function(condition) {
                 console.log(`[BRANCH]   Formula 2 (alt): PC + offset - 2 = 0x${altPC.toString(16)}`);
                 console.log(`[BRANCH]   Current PC after reading branch data: 0x${this.pc.toString(16)}`);
             }
-            this.pc = newPC;
+
+            // Safety check: don't branch to header/data areas
+            if (newPC < HIGH_MEMORY) {
+                console.error(`[BRANCH] WARNING: Attempted to branch to 0x${newPC.toString(16)} which is below high memory (0x${HIGH_MEMORY.toString(16)})`);
+                console.error(`[BRANCH] This usually indicates a bug in parsing or variable handling`);
+                console.error(`[BRANCH] Branch from 0x${branchDataAddr.toString(16)} with offset ${offset}`);
+                console.error(`[BRANCH] This is likely a parse error - returning 0 to indicate failure`);
+                // For now, treat this as a catastrophic error and return false from the routine
+                // This is better than jumping to invalid code
+                this.returnFromRoutine(0);
+            } else {
+                this.pc = newPC;
+            }
         }
     }
 };
