@@ -1972,28 +1972,238 @@ if (typeof module !== "undefined" && module.exports) {
     window.createZMachine = createZMachine;
 }'''
 
+    def generate_html(self, js_filename: str) -> str:
+        """Generate HTML wrapper for browser play"""
+        return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z-Machine Game</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: 'Courier New', Courier, monospace;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }}
+        .container {{
+            background: #1a1a2e;
+            border-radius: 10px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 900px;
+            overflow: hidden;
+        }}
+        .status-bar {{
+            background: linear-gradient(90deg, #00d2ff 0%, #3a47d5 100%);
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            font-size: 14px;
+        }}
+        .game-screen {{
+            background: #000;
+            color: #0f0;
+            padding: 20px;
+            min-height: 500px;
+            max-height: 600px;
+            overflow-y: auto;
+            font-size: 16px;
+            line-height: 1.6;
+        }}
+        #output {{ white-space: pre-wrap; word-wrap: break-word; }}
+        .input-area {{
+            background: #0f0f23;
+            padding: 15px 20px;
+            border-top: 2px solid #3a47d5;
+        }}
+        #input {{
+            background: #1a1a2e;
+            border: 2px solid #3a47d5;
+            color: #0f0;
+            padding: 10px 15px;
+            font-size: 16px;
+            font-family: inherit;
+            width: 100%;
+            border-radius: 5px;
+        }}
+        #input:focus {{ outline: none; border-color: #00d2ff; box-shadow: 0 0 10px rgba(0, 210, 255, 0.3); }}
+        .controls {{
+            background: #0f0f23;
+            padding: 10px 20px;
+            display: flex;
+            gap: 10px;
+        }}
+        button {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }}
+        button:hover {{ transform: translateY(-2px); }}
+        .game-screen::-webkit-scrollbar {{ width: 10px; }}
+        .game-screen::-webkit-scrollbar-track {{ background: #1a1a2e; }}
+        .game-screen::-webkit-scrollbar-thumb {{ background: #3a47d5; border-radius: 5px; }}
+        .loading {{ text-align: center; padding: 50px; color: #0f0; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="status-bar">
+            <div id="location">Loading...</div>
+            <div id="score">Score: 0 | Moves: 0</div>
+        </div>
+        <div class="game-screen">
+            <div id="output" class="loading">Loading game...</div>
+        </div>
+        <div class="input-area">
+            <input type="text" id="input" placeholder="Enter command and press Enter..." autofocus disabled>
+        </div>
+        <div class="controls">
+            <button id="save-btn">Save Game</button>
+            <button id="restore-btn">Load Game</button>
+            <button id="restart-btn">Restart</button>
+        </div>
+    </div>
+    <script src="{js_filename}"></script>
+    <script>
+        let zm = null;
+        let commandHistory = [];
+        let historyIndex = -1;
 
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python jsgen.py <story_file.z3> <output.js>")
-        sys.exit(1)
+        document.addEventListener('DOMContentLoaded', function() {{
+            const output = document.getElementById('output');
+            const input = document.getElementById('input');
+            zm = createZMachine();
+            output.textContent = '';
+            output.classList.remove('loading');
 
-    story_file = sys.argv[1]
-    output_file = sys.argv[2]
+            zm.outputCallback = function(text) {{
+                output.textContent += text;
+                output.scrollTop = output.scrollHeight;
+            }};
+
+            zm.saveCallback = function(state) {{
+                try {{
+                    localStorage.setItem('zmachine_save', JSON.stringify(state));
+                    output.textContent += '\\n[Game saved]\\n';
+                    return true;
+                }} catch(e) {{ return false; }}
+            }};
+
+            zm.restoreCallback = function() {{
+                try {{
+                    const state = localStorage.getItem('zmachine_save');
+                    if (state) return JSON.parse(state);
+                }} catch(e) {{}}
+                return null;
+            }};
+
+            input.disabled = false;
+            input.focus();
+
+            input.addEventListener('keydown', function(e) {{
+                if (e.key === 'Enter') {{
+                    const command = input.value.trim();
+                    if (command) {{
+                        commandHistory.push(command);
+                        historyIndex = commandHistory.length;
+                        output.textContent += '> ' + command + '\\n';
+                        if (zm.inputCallback) zm.inputCallback(command);
+                        input.value = '';
+                    }}
+                }} else if (e.key === 'ArrowUp') {{
+                    e.preventDefault();
+                    if (historyIndex > 0) {{ historyIndex--; input.value = commandHistory[historyIndex]; }}
+                }} else if (e.key === 'ArrowDown') {{
+                    e.preventDefault();
+                    if (historyIndex < commandHistory.length - 1) {{ historyIndex++; input.value = commandHistory[historyIndex]; }}
+                    else {{ historyIndex = commandHistory.length; input.value = ''; }}
+                }}
+            }});
+
+            document.getElementById('save-btn').addEventListener('click', () => zm.save());
+            document.getElementById('restore-btn').addEventListener('click', function() {{
+                const state = zm.restoreCallback();
+                if (zm.restore(state)) output.textContent += '\\n[Game restored]\\n';
+                else output.textContent += '\\n[No saved game found]\\n';
+            }});
+            document.getElementById('restart-btn').addEventListener('click', function() {{
+                if (confirm('Restart the game?')) {{ zm.restart(); output.textContent = ''; }}
+            }});
+
+            try {{ zm.run(); }} catch(e) {{ output.textContent = 'Error: ' + e.message; console.error(e); }}
+        }});
+    </script>
+</body>
+</html>'''
+
+
+def main():
+    """CLI entry point for z2js compiler"""
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog='z2js',
+        description='Z-Machine to JavaScript compiler - convert Infocom-style text adventures to playable web games'
+    )
+    parser.add_argument('story_file', help='Z-machine story file (.z1-.z8)')
+    parser.add_argument('-o', '--output', help='Output JavaScript file (default: <story>.js)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Show verbose output')
+    parser.add_argument('--no-html', action='store_true', help='Skip HTML wrapper generation')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.1.0')
+
+    args = parser.parse_args()
+
+    # Determine output filename
+    if args.output:
+        output_file = args.output
+    else:
+        base = os.path.splitext(args.story_file)[0]
+        output_file = base + '.js'
 
     # Read and parse the story file
-    with open(story_file, 'rb') as f:
+    with open(args.story_file, 'rb') as f:
         data = f.read()
 
-    parser = ZParser(data)
+    zparser = ZParser(data)
+
+    if args.verbose:
+        print(f"Story file: {args.story_file}")
+        print(f"Z-Machine version: {zparser.header.version}")
+        print(f"Release: {zparser.header.release}")
+        print(f"Serial: {zparser.header.serial}")
 
     # Generate JavaScript
-    generator = JavaScriptGenerator(parser)
+    generator = JavaScriptGenerator(zparser)
     js_code = generator.generate()
 
     # Write output
     with open(output_file, 'w') as f:
         f.write(js_code)
 
-    print(f"Generated {output_file} from {story_file}")
+    print(f"Generated {output_file}")
+
+    # Generate HTML wrapper unless --no-html
+    if not args.no_html:
+        html_file = os.path.splitext(output_file)[0] + '.html'
+        html_code = generator.generate_html(os.path.basename(output_file))
+        with open(html_file, 'w') as f:
+            f.write(html_code)
+        print(f"Generated {html_file}")
+
+
+if __name__ == "__main__":
+    main()

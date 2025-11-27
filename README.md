@@ -13,13 +13,10 @@ A Python compiler that converts Z-machine story files (.z1-.z8) to playable Java
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd z2js
-
-# Make the compiler executable
-chmod +x z2js
+pip install z2js
 ```
+
+For development or from source, see [INSTALL.md](INSTALL.md).
 
 ## Usage
 
@@ -27,7 +24,7 @@ chmod +x z2js
 
 ```bash
 # Compile a Z-machine file to JavaScript
-./z2js game.z3
+z2js game.z3
 
 # This generates:
 # - game.js: The JavaScript runtime and game data
@@ -38,13 +35,16 @@ chmod +x z2js
 
 ```bash
 # Specify output file
-./z2js game.z3 -o mygame.js
+z2js game.z3 -o mygame.js
+
+# Skip HTML generation
+z2js game.z3 --no-html
 
 # Verbose output (shows version, serial, etc.)
-./z2js game.z3 -v
+z2js game.z3 -v
 
 # Show help
-./z2js --help
+z2js --help
 ```
 
 ## Project Structure
