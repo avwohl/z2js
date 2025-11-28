@@ -51,15 +51,27 @@ class JavaScriptGenerator:
     def _generate_constants(self) -> str:
         """Generate constants from header"""
         h = self.parser.header
+
+        # For V6/V7, initial_pc is a packed routine address - unpack it
+        # For V1-V5, V8, initial_pc is already a direct byte address
+        if h.version == 6 or h.version == 7:
+            # V6/V7: packed address * 4 + routines_offset
+            initial_pc = h.initial_pc * 4 + h.routines_offset
+        else:
+            initial_pc = h.initial_pc
+
         return f'''// Z-Machine Constants
 const VERSION = {h.version};
-const INITIAL_PC = 0x{h.initial_pc:04X};
+const INITIAL_PC = 0x{initial_pc:04X};  // {'Unpacked from packed address' if h.version in (6, 7) else 'Direct byte address'}
 const DICTIONARY_ADDR = 0x{h.dictionary:04X};
 const OBJECT_TABLE_ADDR = 0x{h.object_table:04X};
 const GLOBALS_ADDR = 0x{h.globals:04X};
 const STATIC_MEMORY = 0x{h.static_memory:04X};
 const ABBREVIATIONS_ADDR = 0x{h.abbreviations:04X};
-const HIGH_MEMORY = 0x{h.high_memory:04X};'''
+const HIGH_MEMORY = 0x{h.high_memory:04X};
+// V6/V7 offsets for packed addresses (already multiplied by 8 in header parsing)
+const ROUTINES_OFFSET = 0x{h.routines_offset:04X};
+const STRINGS_OFFSET = 0x{h.strings_offset:04X};'''
 
     def _generate_runtime(self) -> str:
         """Generate the Z-Machine runtime system"""
@@ -100,6 +112,13 @@ class ZMachine {
         this.instructionCount = 0;
         this.instructionHistory = [];
         this.maxHistorySize = 100;
+
+        // Multimedia resources (V6 graphics/sound)
+        this.pictures = {};       // picture_num -> { data: base64, format: 'png'|'jpeg', width, height }
+        this.sounds = {};         // sound_num -> { data: base64, format: 'aiff'|'ogg'|'mod' }
+        this.currentSound = null; // Currently playing audio element
+        this.graphicsCallback = null;  // Function to call for drawing pictures
+        this.soundCallback = null;     // Function to call for playing sounds
     }
 
     // Memory access
@@ -186,6 +205,8 @@ class ZMachine {
     }
 
     // Packed address conversion
+    // V6/V7 use different offsets for routines vs strings
+    // V8 uses divisor of 8 but NO offsets (like V5 semantics)
     unpackAddress(packed, isString = false) {
         switch (VERSION) {
             case 1: case 2: case 3:
@@ -193,33 +214,43 @@ class ZMachine {
             case 4: case 5:
                 return packed * 4;
             case 6: case 7:
-                // TODO: Handle routine/string offsets
-                return packed * 4;
+                // V6/V7: Use appropriate offset based on address type
+                if (isString) {
+                    return packed * 4 + STRINGS_OFFSET;
+                } else {
+                    return packed * 4 + ROUTINES_OFFSET;
+                }
             case 8:
+                // V8 uses divisor of 8 but NO offsets
                 return packed * 8;
             default:
                 return packed * 2;
         }
     }
 
-    // Z-String decoding
+    // Z-String decoding with version-specific handling
+    // V1: z-char 1 = newline, z-chars 2-3 = shift up/down, z-chars 4-5 = shift lock
+    // V2: z-chars 1-3 = abbreviations (only 1 in V2), z-chars 4-5 = shift (temporary in V2)
+    // V3+: z-chars 1-3 = abbreviations, z-chars 4-5 = temporary shift
     decodeZString(addr) {
-        const startAddr = addr;
-        // A2 alphabet varies by version - V1 has different punctuation
-        // Spec section 3: A2 has space, newline, digits, then punctuation
-        const a2_v1 = " 0123456789.,!?_#'\\"/<-:()";  // V1: has < instead of newline
-        const a2_v2plus = " \\n0123456789.,!?_#'\\\"/\\\\-:()";  // V2+: correct order per spec
+        // A2 alphabet varies by version
+        // V1: no newline, digits start at position 1 (z-char 7 = '0')
+        // V2+: newline at position 1, digits start at position 2 (z-char 8 = '0')
+        const a2_v1 = " 0123456789.,!?_#'\\"/<-:()";
+        const a2_v2plus = " \\n0123456789.,!?_#'\\"/-:()";
 
         const alphabets = [
-            "abcdefghijklmnopqrstuvwxyz",      // A0 (default)
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ",      // A1
-            VERSION === 1 ? a2_v1 : a2_v2plus  // A2 (version-specific)
+            "abcdefghijklmnopqrstuvwxyz",      // A0 (lowercase)
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ",      // A1 (uppercase)
+            VERSION === 1 ? a2_v1 : a2_v2plus  // A2 (punctuation/digits)
         ];
 
         let result = "";
         let alphabet = 0;
-        let abbrev = 0;
-        let zsciiHigh = -1;  // For 10-bit ZSCII character codes
+        let lockAlphabet = 0;  // For V1/V2 shift lock
+        let abbrevTable = 0;   // Which abbreviation table (1-3)
+        let zsciiState = 0;    // 0=normal, 1=waiting high, 2=waiting low
+        let zsciiHigh = 0;
 
         while (true) {
             const word = this.readWord(addr);
@@ -232,48 +263,130 @@ class ZMachine {
             ];
 
             for (let c of chars) {
-
-                if (zsciiHigh === -2) {
-                    // This is the high 5 bits of ZSCII code
+                // Handle 10-bit ZSCII escape sequence
+                if (zsciiState === 1) {
                     zsciiHigh = c;
-                } else if (zsciiHigh >= 0) {
-                    // This is the low 5 bits - combine with high to get full ZSCII
+                    zsciiState = 2;
+                    continue;
+                } else if (zsciiState === 2) {
                     const zsciiCode = (zsciiHigh << 5) | c;
-                    result += String.fromCharCode(zsciiCode);
-                    zsciiHigh = -1;
-                    alphabet = 0;
-                } else if (abbrev > 0) {
-                    // Handle abbreviation
+                    if (zsciiCode > 0) result += String.fromCharCode(zsciiCode);
+                    zsciiState = 0;
+                    alphabet = lockAlphabet;
+                    continue;
+                }
+
+                // Handle abbreviation mode
+                if (abbrevTable > 0) {
                     if (VERSION >= 2 && ABBREVIATIONS_ADDR) {
-                        const abbrevAddr = ABBREVIATIONS_ADDR + 2 * (32 * (abbrev - 1) + c);
+                        const abbrevAddr = ABBREVIATIONS_ADDR + 2 * (32 * (abbrevTable - 1) + c);
                         const wordAddr = this.readWord(abbrevAddr);
                         result += this.decodeZString(wordAddr * 2);
                     }
-                    abbrev = 0;
-                } else if (c === 0) {
+                    abbrevTable = 0;
+                    alphabet = lockAlphabet;
+                    continue;
+                }
+
+                // Z-char 0: always space
+                if (c === 0) {
                     result += " ";
-                } else if (c >= 1 && c <= 3 && VERSION >= 2) {
-                    abbrev = c;
-                } else if (c === 4) {
-                    alphabet = 1;
-                } else if (c === 5) {
-                    alphabet = 2;
-                } else if (c === 6 && alphabet === 2) {
-                    // Start of 10-bit ZSCII code - next TWO characters form the code
-                    zsciiHigh = -2;  // Marker that next char is high bits
-                    // Don't reset alphabet yet
-                } else if (c >= 6) {
-                    const idx = c - 6;
-                    let ch = null;
-                    if (alphabet === 0 && idx < alphabets[0].length) {
-                        ch = alphabets[0][idx];
-                    } else if (alphabet === 1 && idx < alphabets[1].length) {
-                        ch = alphabets[1][idx];
-                    } else if (alphabet === 2 && idx < alphabets[2].length) {
-                        ch = alphabets[2][idx];
+                    alphabet = lockAlphabet;
+                    continue;
+                }
+
+                // Z-char 1
+                if (c === 1) {
+                    if (VERSION === 1) {
+                        // V1: newline
+                        result += "\\n";
+                        alphabet = lockAlphabet;
+                    } else {
+                        // V2+: abbreviation table 0
+                        abbrevTable = 1;
                     }
-                    if (ch !== null) result += ch;
+                    continue;
+                }
+
+                // Z-char 2
+                if (c === 2) {
+                    if (VERSION === 1) {
+                        // V1: temporary shift UP
+                        alphabet = (alphabet + 1) % 3;
+                    } else if (VERSION === 2) {
+                        // V2: temporary shift UP
+                        alphabet = (lockAlphabet + 1) % 3;
+                    } else {
+                        // V3+: abbreviation table 1
+                        abbrevTable = 2;
+                    }
+                    continue;
+                }
+
+                // Z-char 3
+                if (c === 3) {
+                    if (VERSION === 1) {
+                        // V1: temporary shift DOWN
+                        alphabet = (alphabet + 2) % 3;
+                    } else if (VERSION === 2) {
+                        // V2: temporary shift DOWN
+                        alphabet = (lockAlphabet + 2) % 3;
+                    } else {
+                        // V3+: abbreviation table 2
+                        abbrevTable = 3;
+                    }
+                    continue;
+                }
+
+                // Z-char 4
+                if (c === 4) {
+                    if (VERSION <= 2) {
+                        // V1/V2: shift lock UP
+                        lockAlphabet = (lockAlphabet + 1) % 3;
+                        alphabet = lockAlphabet;
+                    } else {
+                        // V3+: temporary shift to A1
+                        alphabet = 1;
+                    }
+                    continue;
+                }
+
+                // Z-char 5
+                if (c === 5) {
+                    if (VERSION <= 2) {
+                        // V1/V2: shift lock DOWN
+                        lockAlphabet = (lockAlphabet + 2) % 3;
+                        alphabet = lockAlphabet;
+                    } else {
+                        // V3+: temporary shift to A2
+                        alphabet = 2;
+                    }
+                    continue;
+                }
+
+                // Z-char 6 in A2: start 10-bit ZSCII escape
+                if (c === 6 && alphabet === 2) {
+                    zsciiState = 1;
+                    continue;
+                }
+
+                // Regular character (z-chars 6-31)
+                if (c >= 6) {
+                    const idx = c - 6;
+                    if (alphabet === 0 && idx < alphabets[0].length) {
+                        result += alphabets[0][idx];
+                    } else if (alphabet === 1 && idx < alphabets[1].length) {
+                        result += alphabets[1][idx];
+                    } else if (alphabet === 2 && idx < alphabets[2].length) {
+                        result += alphabets[2][idx];
+                    }
+                }
+
+                // Reset alphabet after character
+                if (VERSION >= 3) {
                     alphabet = 0;
+                } else {
+                    alphabet = lockAlphabet;
                 }
             }
 
@@ -1127,8 +1240,9 @@ ZMachine.prototype.execute1OP = function(opcode, operand) {
                 this.pc += offset - 2;
             }
             break;
-        case 0x0D: // print_paddr
+        case 0x0D: // print_paddr - packed string address
             {
+                // This is a packed STRING address, so pass isString=true for V6/V7
                 const addr = this.unpackAddress(value, true);
                 const text = this.decodeZString(addr);
                 this.print(text);
@@ -1446,8 +1560,17 @@ ZMachine.prototype.executeVAR = function(opcode) {
         case 0x08: // push
             this.push(values[0]);
             break;
-        case 0x09: // pull
-            {
+        case 0x09: // pull - version-specific behavior!
+            // V1-5, V8: pull (variable) - operand is target variable number, no store byte
+            // V6-7: pull stack -> (result) - has store byte, operand defaults to user stack
+            if (VERSION === 6 || VERSION === 7) {
+                // V6/V7: Pop from user stack (if specified) or evaluation stack
+                // The operand (if provided) is a user stack address, result goes to store variable
+                // For now, we just pop from evaluation stack like other versions
+                const value = this.pop();
+                this.store(value);
+            } else {
+                // V1-5, V8: Pop and store in variable specified by operand
                 const value = this.pop();
                 this.setVariable(values[0], value);
             }
@@ -1491,8 +1614,47 @@ ZMachine.prototype.executeVAR = function(opcode) {
         case 0x15: // input_stream
             // Not implemented - no-op
             break;
-        case 0x16: // sound_effect
-            // Not implemented - no-op
+        case 0x16: // sound_effect (V3+)
+            {
+                // sound_effect number effect volume routine
+                // effect: 1=prepare, 2=start, 3=stop, 4=finish
+                // volume: high byte = repeats (255=forever), low byte = volume (1-8, 8=loudest)
+                const soundNum = values[0] || 0;
+                const effect = values[1] || 2;  // Default to start
+                const volume = values[2] || 8;  // Default to max volume
+                // values[3] would be interrupt routine (V5+)
+
+                if (this.soundCallback) {
+                    this.soundCallback(soundNum, effect, volume);
+                } else if (typeof Audio !== 'undefined' && this.sounds[soundNum]) {
+                    // Basic browser audio support
+                    const sound = this.sounds[soundNum];
+                    if (effect === 2) {
+                        // Start playing
+                        if (this.currentSound) {
+                            this.currentSound.pause();
+                        }
+                        try {
+                            const audio = new Audio('data:audio/' + sound.format + ';base64,' + sound.data);
+                            audio.volume = (volume & 0xFF) / 8;
+                            const repeats = (volume >> 8) & 0xFF;
+                            if (repeats === 255) {
+                                audio.loop = true;
+                            }
+                            audio.play().catch(() => {});
+                            this.currentSound = audio;
+                        } catch (e) {
+                            if (this.debugMode) console.error('[SOUND] Failed to play:', e);
+                        }
+                    } else if (effect === 3 || effect === 4) {
+                        // Stop/finish
+                        if (this.currentSound) {
+                            this.currentSound.pause();
+                            this.currentSound = null;
+                        }
+                    }
+                }
+            }
             break;
         case 0x17: // read_char (V4+)
             // Would need async input
@@ -1532,6 +1694,334 @@ ZMachine.prototype.executeVAR = function(opcode) {
             break;
         default:
             throw new Error(`Unimplemented VAR opcode: 0x${opcode.toString(16)}`);
+    }
+};
+
+// Extended Instructions (V5+ only, opcode 0xBE prefix)
+ZMachine.prototype.executeExtended = function() {
+    // Read the extended opcode number
+    const extOpcode = this.readByte(this.pc);
+    this.pc++;
+
+    // Read operand types
+    const types = this.readByte(this.pc);
+    this.pc++;
+
+    const operands = [];
+    for (let i = 0; i < 4; i++) {
+        const opType = (types >> (6 - i * 2)) & 0x03;
+        if (opType === 3) break; // No more operands
+        if (opType === 0) {
+            operands.push(this.readWord(this.pc));
+            this.pc += 2;
+        } else if (opType === 1) {
+            operands.push(this.readByte(this.pc));
+            this.pc++;
+        } else if (opType === 2) {
+            operands.push(["var", this.readByte(this.pc)]);
+            this.pc++;
+        }
+    }
+
+    // Get actual values
+    const values = operands.map(op => this.getOperand(op));
+
+    if (this.debugMode) {
+        console.error(`[EXT 0x${extOpcode.toString(16)}] values: [${values.map(v => '0x' + v.toString(16)).join(', ')}]`);
+    }
+
+    switch (extOpcode) {
+        case 0x00: // save (extended form, V5+)
+            {
+                // V5+ save with optional table/bytes/name
+                // Returns 0 on failure, 1 on save, 2 on restore
+                const result = this.save() ? 1 : 0;
+                this.store(result);
+            }
+            break;
+
+        case 0x01: // restore (extended form, V5+)
+            {
+                // V5+ restore with optional table/bytes/name
+                if (this.restoreCallback) {
+                    const state = this.restoreCallback();
+                    if (this.restore(state)) {
+                        // Restore succeeded - store 2 to indicate success
+                        this.store(2);
+                    } else {
+                        this.store(0);
+                    }
+                } else {
+                    this.store(0);
+                }
+            }
+            break;
+
+        case 0x02: // log_shift - logical shift
+            {
+                const number = values[0];
+                const places = values[1] > 32767 ? values[1] - 65536 : values[1]; // signed
+                let result;
+                if (places >= 0) {
+                    result = (number << places) & 0xFFFF;
+                } else {
+                    result = (number >>> -places) & 0xFFFF;
+                }
+                this.store(result);
+            }
+            break;
+
+        case 0x03: // art_shift - arithmetic shift
+            {
+                let number = values[0] > 32767 ? values[0] - 65536 : values[0]; // signed
+                const places = values[1] > 32767 ? values[1] - 65536 : values[1]; // signed
+                let result;
+                if (places >= 0) {
+                    result = (number << places);
+                } else {
+                    result = (number >> -places); // arithmetic right shift preserves sign
+                }
+                result = result & 0xFFFF;
+                this.store(result);
+            }
+            break;
+
+        case 0x04: // set_font
+            {
+                // Font 1 = normal, 3 = character graphics, 4 = fixed-pitch
+                // Return previous font number, or 0 if requested font not available
+                const font = values[0];
+                // For now, accept font 1 (normal) and 4 (fixed)
+                if (font === 1 || font === 4) {
+                    this.store(1); // Pretend we were using font 1
+                } else {
+                    this.store(0); // Font not available
+                }
+            }
+            break;
+
+        case 0x05: // draw_picture (V6 graphics)
+            {
+                // draw_picture picture-number y x
+                const picNum = values[0];
+                const y = values.length > 1 ? values[1] : 1;
+                const x = values.length > 2 ? values[2] : 1;
+
+                if (this.graphicsCallback) {
+                    this.graphicsCallback('draw', picNum, x, y);
+                } else if (this.pictures[picNum]) {
+                    // Basic browser support - create an img element
+                    if (typeof document !== 'undefined') {
+                        const pic = this.pictures[picNum];
+                        const img = document.createElement('img');
+                        img.src = 'data:image/' + pic.format + ';base64,' + pic.data;
+                        img.style.position = 'absolute';
+                        img.style.left = x + 'px';
+                        img.style.top = y + 'px';
+                        const container = document.getElementById('graphics-container');
+                        if (container) container.appendChild(img);
+                    }
+                }
+                if (this.debugMode) console.error(`[EXT] draw_picture: pic=${picNum} at (${x},${y})`);
+            }
+            break;
+
+        case 0x06: // picture_data (V6 graphics)
+            {
+                // picture_data picture-number array -> (result)
+                // If picture-number is 0, returns number of pictures
+                // Otherwise stores width and height in array and branches if exists
+                const picNum = values[0];
+                const array = values.length > 1 ? values[1] : 0;
+
+                if (picNum === 0) {
+                    // Return total number of pictures
+                    this.store(Object.keys(this.pictures).length);
+                } else if (this.pictures[picNum]) {
+                    const pic = this.pictures[picNum];
+                    if (array) {
+                        this.writeWord(array, pic.height || 0);
+                        this.writeWord(array + 2, pic.width || 0);
+                    }
+                    this.branch(true);
+                } else {
+                    this.branch(false);
+                }
+            }
+            break;
+
+        case 0x07: // erase_picture (V6 graphics)
+            {
+                // erase_picture picture-number y x - erase area same size as picture
+                const picNum = values[0];
+                const y = values.length > 1 ? values[1] : 1;
+                const x = values.length > 2 ? values[2] : 1;
+
+                if (this.graphicsCallback) {
+                    this.graphicsCallback('erase', picNum, x, y);
+                }
+                if (this.debugMode) console.error(`[EXT] erase_picture: pic=${picNum} at (${x},${y})`);
+            }
+            break;
+
+        case 0x08: // set_margins (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] set_margins: not implemented');
+            break;
+
+        case 0x09: // save_undo
+            {
+                // Save undo state
+                // Returns -1 if undo not available, 0 on failure, 1 on save, 2 on successful restore
+                if (!this.undoStates) {
+                    this.undoStates = [];
+                }
+                try {
+                    const state = {
+                        memory: this.memory.slice(0, STATIC_MEMORY),
+                        stack: this.stack.slice(),
+                        callStack: JSON.parse(JSON.stringify(this.callStack)),
+                        pc: this.pc,
+                        locals: this.locals.slice()
+                    };
+                    this.undoStates.push(state);
+                    // Limit undo history
+                    if (this.undoStates.length > 10) {
+                        this.undoStates.shift();
+                    }
+                    this.store(1);
+                } catch (e) {
+                    this.store(0);
+                }
+            }
+            break;
+
+        case 0x0A: // restore_undo
+            {
+                if (!this.undoStates || this.undoStates.length === 0) {
+                    this.store(0);
+                } else {
+                    const state = this.undoStates.pop();
+                    // Restore dynamic memory
+                    for (let i = 0; i < state.memory.length; i++) {
+                        this.memory[i] = state.memory[i];
+                    }
+                    this.stack = state.stack.slice();
+                    this.callStack = JSON.parse(JSON.stringify(state.callStack));
+                    this.pc = state.pc;
+                    this.locals = state.locals.slice();
+                    this.store(2); // Successful restore
+                }
+            }
+            break;
+
+        case 0x0B: // print_unicode
+            {
+                const charCode = values[0];
+                this.print(String.fromCharCode(charCode));
+            }
+            break;
+
+        case 0x0C: // check_unicode
+            {
+                // Check if unicode character can be printed (bit 0) or read (bit 1)
+                // For simplicity, assume all characters can be printed and read
+                this.store(3); // Both bits set
+            }
+            break;
+
+        case 0x0D: // set_true_colour (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] set_true_colour: not implemented');
+            break;
+
+        case 0x10: // move_window (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] move_window: not implemented');
+            break;
+
+        case 0x11: // window_size (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] window_size: not implemented');
+            break;
+
+        case 0x12: // window_style (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] window_style: not implemented');
+            break;
+
+        case 0x13: // get_wind_prop (V6)
+            // Return 0 for all window properties
+            this.store(0);
+            break;
+
+        case 0x14: // scroll_window (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] scroll_window: not implemented');
+            break;
+
+        case 0x15: // pop_stack (V6)
+            {
+                // Pop items from a stack
+                const items = values[0];
+                const stack = values.length > 1 ? values[1] : 0; // 0 = evaluation stack
+                for (let i = 0; i < items; i++) {
+                    this.pop();
+                }
+            }
+            break;
+
+        case 0x16: // read_mouse (V6)
+            // Not implemented - just return zeros
+            if (values[0]) {
+                this.writeWord(values[0], 0);     // Y coordinate
+                this.writeWord(values[0] + 2, 0); // X coordinate
+                this.writeWord(values[0] + 4, 0); // Buttons
+                this.writeWord(values[0] + 6, 0); // Menu selection
+            }
+            break;
+
+        case 0x17: // mouse_window (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] mouse_window: not implemented');
+            break;
+
+        case 0x18: // push_stack (V6)
+            {
+                // Push value onto a user stack, branch on success
+                // For simplicity, just push to evaluation stack
+                this.push(values[0]);
+                this.branch(true);
+            }
+            break;
+
+        case 0x19: // put_wind_prop (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] put_wind_prop: not implemented');
+            break;
+
+        case 0x1A: // print_form (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] print_form: not implemented');
+            break;
+
+        case 0x1B: // make_menu (V6)
+            // Not implemented - always fail
+            this.branch(false);
+            break;
+
+        case 0x1C: // picture_table (V6)
+            // Not implemented - no-op
+            if (this.debugMode) console.error('[EXT] picture_table: not implemented');
+            break;
+
+        case 0x1D: // buffer_screen (V6)
+            // Return 0 (buffer screen mode not supported)
+            this.store(0);
+            break;
+
+        default:
+            throw new Error(`Unimplemented extended opcode: 0x${extOpcode.toString(16)}`);
     }
 };
 
@@ -2159,11 +2649,12 @@ def main():
         prog='z2js',
         description='Z-Machine to JavaScript compiler - convert Infocom-style text adventures to playable web games'
     )
-    parser.add_argument('story_file', help='Z-machine story file (.z1-.z8)')
+    parser.add_argument('story_file', help='Z-machine story file (.z1-.z8) or Blorb file (.blorb, .zblorb)')
     parser.add_argument('-o', '--output', help='Output JavaScript file (default: <story>.js)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Show verbose output')
     parser.add_argument('--no-html', action='store_true', help='Skip HTML wrapper generation')
-    parser.add_argument('--version', action='version', version='%(prog)s 0.1.0')
+    parser.add_argument('--extract-resources', action='store_true', help='Extract Blorb resources to files')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.2.0')
 
     args = parser.parse_args()
 
@@ -2174,9 +2665,60 @@ def main():
         base = os.path.splitext(args.story_file)[0]
         output_file = base + '.js'
 
-    # Read and parse the story file
+    # Read the input file
     with open(args.story_file, 'rb') as f:
         data = f.read()
+
+    # Check if it's a Blorb file and extract the story
+    blorb_parser = None
+    try:
+        from blorb import is_blorb_file, BlorbParser
+        if is_blorb_file(data):
+            if args.verbose:
+                print(f"Detected Blorb file format")
+            blorb_parser = BlorbParser(data)
+            story_data = blorb_parser.get_story_file()
+            if story_data is None:
+                print("Error: Blorb file does not contain a Z-machine story")
+                return 1
+
+            if args.verbose:
+                print(f"Extracted story file: {len(story_data)} bytes")
+                if blorb_parser.metadata.title:
+                    print(f"Title: {blorb_parser.metadata.title}")
+                if blorb_parser.metadata.author:
+                    print(f"Author: {blorb_parser.metadata.author}")
+                print(f"Pictures: {len(blorb_parser.pictures)}")
+                print(f"Sounds: {len(blorb_parser.sounds)}")
+
+            # Extract resources if requested
+            if args.extract_resources:
+                resource_dir = os.path.splitext(output_file)[0] + '_resources'
+                os.makedirs(resource_dir, exist_ok=True)
+
+                for pic_num in blorb_parser.list_pictures():
+                    pic_data = blorb_parser.get_picture(pic_num)
+                    if pic_data:
+                        raw_data, fmt = pic_data
+                        pic_file = os.path.join(resource_dir, f'pic_{pic_num}.{fmt}')
+                        with open(pic_file, 'wb') as f:
+                            f.write(raw_data)
+                        if args.verbose:
+                            print(f"Extracted: {pic_file}")
+
+                for snd_num in blorb_parser.list_sounds():
+                    snd_data = blorb_parser.get_sound(snd_num)
+                    if snd_data:
+                        raw_data, fmt = snd_data
+                        snd_file = os.path.join(resource_dir, f'snd_{snd_num}.{fmt}')
+                        with open(snd_file, 'wb') as f:
+                            f.write(raw_data)
+                        if args.verbose:
+                            print(f"Extracted: {snd_file}")
+
+            data = story_data
+    except ImportError:
+        pass  # Blorb module not available
 
     zparser = ZParser(data)
 

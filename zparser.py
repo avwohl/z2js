@@ -60,10 +60,13 @@ class ZObject:
 class ZParser:
     """Parser for Z-Machine story files"""
 
-    # Z-String alphabet tables
-    A0 = " \n0123456789.,!?_#\\'\"/-:()"
-    A1 = "abcdefghijklmnopqrstuvwxyz"
-    A2 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    # Z-String alphabet tables (A0 = lowercase, A1 = uppercase, A2 = punctuation/numbers)
+    # Note: These are the default alphabets. Custom alphabets can be defined in the header.
+    A0 = "abcdefghijklmnopqrstuvwxyz"  # Alphabet 0: lowercase letters
+    A1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # Alphabet 1: uppercase letters
+    # A2 varies by version - see decode_zstring for version-specific handling
+    # V1 A2: [escape][0-9][.][,][!][?][_][#][']["][/][\][<][-][:][(][)]
+    # V2+ A2: [escape][newline][0-9][.][,][!][?][_][#][']["][/][\][-][:][(][)]
 
     def __init__(self, data: bytes):
         self.data = data
@@ -118,23 +121,36 @@ class ZParser:
             header.terminating_chars = struct.unpack('>H', self.data[0x2E:0x30])[0]
             header.standard_revision = struct.unpack('>H', self.data[0x32:0x34])[0]
 
-        if header.version >= 6:
+        if header.version == 6 or header.version == 7:
+            # V6/V7 use routines_offset and strings_offset for packed address calculation
+            # These are raw values from header, multiplied by 8
             header.routines_offset = struct.unpack('>H', self.data[0x28:0x2A])[0] * 8
             header.strings_offset = struct.unpack('>H', self.data[0x2A:0x2C])[0] * 8
             header.output_stream3_width = struct.unpack('>H', self.data[0x30:0x32])[0]
+        # Note: V8 does NOT use routines_offset/strings_offset - they remain 0
 
         return header
 
-    def unpack_address(self, packed_addr: int) -> int:
-        """Convert packed address to byte address"""
+    def unpack_address(self, packed_addr: int, is_string: bool = False) -> int:
+        """Convert packed address to byte address
+
+        V6/V7 use different offsets for routines vs strings:
+        - Routine addresses: packed_addr * 4 + routines_offset
+        - String addresses: packed_addr * 4 + strings_offset
+        V8 uses packed_addr * 8 with NO offsets (like V5 semantics)
+        """
         if self.header.version <= 3:
             return packed_addr * 2
         elif self.header.version <= 5:
             return packed_addr * 4
         elif self.header.version == 6 or self.header.version == 7:
-            # TODO: Handle routine/string offsets for V6/7
-            return packed_addr * 4 + self.header.routines_offset
+            # V6/V7: Use appropriate offset based on address type
+            if is_string:
+                return packed_addr * 4 + self.header.strings_offset
+            else:
+                return packed_addr * 4 + self.header.routines_offset
         else:  # V8
+            # V8 uses divisor of 8 but NO offsets (like V5)
             return packed_addr * 8
 
     def read_byte(self, addr: int) -> int:
@@ -157,11 +173,35 @@ class ZParser:
             self.memory[addr + 1] = value & 0xFF
 
     def decode_zstring(self, addr: int) -> Tuple[str, int]:
-        """Decode a Z-string at given address, return (string, next_address)"""
+        """Decode a Z-string at given address, return (string, next_address)
+
+        Version-specific differences:
+        - V1: z-char 1 = newline, z-chars 2-3 = shift up/down, z-chars 4-5 = shift lock up/down
+        - V2: z-chars 1-3 = abbreviations, z-chars 4-5 = temporary shift
+        - V3+: Same as V2
+
+        A2 alphabet differences:
+        - V1: position 7 = '0' (digit zero), no newline in alphabet
+        - V2+: position 7 = newline, digits start at position 8
+        """
         result = []
         alphabet = 0
+        lock_alphabet = 0  # For V1/V2 shift lock
         abbreviation_mode = False
+        abbrev_table = 0  # Which abbreviation table (1-3)
+        zscii_state = 0  # 0=normal, 1=waiting for high bits, 2=waiting for low bits
+        zscii_high = 0
         current_addr = addr
+
+        # Version-specific A2 alphabet
+        # Z-chars 6-31 map to positions 0-25 in the alphabet
+        # Position 0 (z-char 6) is escape for 10-bit ZSCII
+        if self.header.version == 1:
+            # V1: no newline, digits start at position 1 (z-char 7)
+            A2 = " 0123456789.,!?_#'\"/\\<-:()"
+        else:
+            # V2+: newline at position 1 (z-char 7), digits start at position 2 (z-char 8)
+            A2 = " \n0123456789.,!?_#'\"/\\-:()"
 
         while True:
             word = self.read_word(current_addr)
@@ -175,72 +215,122 @@ class ZParser:
             ]
 
             for char_code in chars:
+                # Handle 10-bit ZSCII escape sequence
+                if zscii_state == 1:
+                    zscii_high = char_code
+                    zscii_state = 2
+                    continue
+                elif zscii_state == 2:
+                    zscii_char = (zscii_high << 5) | char_code
+                    if zscii_char > 0:
+                        result.append(chr(zscii_char))
+                    zscii_state = 0
+                    alphabet = lock_alphabet  # Reset to lock alphabet
+                    continue
+
+                # Handle abbreviation mode
                 if abbreviation_mode:
-                    # Handle abbreviation
                     if self.header.version >= 2 and self.header.abbreviations:
-                        abbr_addr = self.header.abbreviations + 2 * (32 * (alphabet - 1) + char_code)
+                        abbr_addr = self.header.abbreviations + 2 * (32 * (abbrev_table - 1) + char_code)
                         abbr_word_addr = self.read_word(abbr_addr)
                         abbr_str, _ = self.decode_zstring(abbr_word_addr * 2)
                         result.append(abbr_str)
                     abbreviation_mode = False
-                    alphabet = 0
-                elif char_code == 0:
-                    result.append(' ')
-                elif char_code == 1:
-                    # Abbreviation in V2+
-                    if self.header.version >= 2:
-                        abbreviation_mode = True
-                        alphabet = 1
-                elif char_code == 2:
-                    # Abbreviation in V2+
-                    if self.header.version >= 2:
-                        abbreviation_mode = True
-                        alphabet = 2
-                    elif self.header.version == 1:
-                        # Shift up
-                        alphabet = (alphabet + 1) % 3
-                elif char_code == 3:
-                    # Abbreviation in V2+
-                    if self.header.version >= 2:
-                        abbreviation_mode = True
-                        alphabet = 3
-                    elif self.header.version == 1:
-                        # Shift down
-                        alphabet = (alphabet + 2) % 3
-                elif char_code == 4:
-                    # Shift up (V1) or temporary shift (V2+)
-                    if self.header.version == 1:
-                        alphabet = (alphabet + 1) % 3
-                    else:
-                        alphabet = 1
-                elif char_code == 5:
-                    # Shift down (V1) or temporary shift (V2+)
-                    if self.header.version == 1:
-                        alphabet = (alphabet + 2) % 3
-                    else:
-                        alphabet = 2
-                elif char_code == 6 and alphabet == 2:
-                    # Literal character follows
-                    # Read next two characters as 10-bit ASCII
-                    # This is complex, simplified for now
-                    pass
-                else:
-                    # Regular character
-                    if alphabet == 0:
-                        if 6 <= char_code <= 31:
-                            result.append(self.A1[char_code - 6])
-                    elif alphabet == 1:
-                        if 6 <= char_code <= 31:
-                            result.append(self.A2[char_code - 6])
-                    elif alphabet == 2:
-                        if 7 <= char_code <= 31:
-                            idx = char_code - 7
-                            if idx < len(self.A0):
-                                result.append(self.A0[idx])
+                    alphabet = lock_alphabet
+                    continue
 
-                # Reset alphabet after each character in V2+
-                if self.header.version >= 2 and not abbreviation_mode:
+                # Handle z-char 0: always space
+                if char_code == 0:
+                    result.append(' ')
+                    alphabet = lock_alphabet
+                    continue
+
+                # Handle z-char 1
+                if char_code == 1:
+                    if self.header.version == 1:
+                        # V1: newline
+                        result.append('\n')
+                        alphabet = lock_alphabet
+                    else:
+                        # V2+: abbreviation table 0
+                        abbreviation_mode = True
+                        abbrev_table = 1
+                    continue
+
+                # Handle z-char 2
+                if char_code == 2:
+                    if self.header.version == 1:
+                        # V1: temporary shift UP (A0->A1, A1->A2, A2->A0)
+                        alphabet = (alphabet + 1) % 3
+                    elif self.header.version == 2:
+                        # V2: temporary shift UP
+                        alphabet = (lock_alphabet + 1) % 3
+                    else:
+                        # V3+: abbreviation table 1
+                        abbreviation_mode = True
+                        abbrev_table = 2
+                    continue
+
+                # Handle z-char 3
+                if char_code == 3:
+                    if self.header.version == 1:
+                        # V1: temporary shift DOWN (A0->A2, A1->A0, A2->A1)
+                        alphabet = (alphabet + 2) % 3
+                    elif self.header.version == 2:
+                        # V2: temporary shift DOWN
+                        alphabet = (lock_alphabet + 2) % 3
+                    else:
+                        # V3+: abbreviation table 2
+                        abbreviation_mode = True
+                        abbrev_table = 3
+                    continue
+
+                # Handle z-char 4
+                if char_code == 4:
+                    if self.header.version <= 2:
+                        # V1/V2: shift lock UP
+                        lock_alphabet = (lock_alphabet + 1) % 3
+                        alphabet = lock_alphabet
+                    else:
+                        # V3+: temporary shift to A1
+                        alphabet = 1
+                    continue
+
+                # Handle z-char 5
+                if char_code == 5:
+                    if self.header.version <= 2:
+                        # V1/V2: shift lock DOWN
+                        lock_alphabet = (lock_alphabet + 2) % 3
+                        alphabet = lock_alphabet
+                    else:
+                        # V3+: temporary shift to A2
+                        alphabet = 2
+                    continue
+
+                # Handle z-chars 6-31: alphabet characters
+                if char_code == 6 and alphabet == 2:
+                    # Escape for 10-bit ZSCII - next two z-chars form the character code
+                    zscii_state = 1
+                    continue
+
+                # Regular character lookup
+                if 6 <= char_code <= 31:
+                    idx = char_code - 6
+                    if alphabet == 0:
+                        if idx < len(self.A0):
+                            result.append(self.A0[idx])
+                    elif alphabet == 1:
+                        if idx < len(self.A1):
+                            result.append(self.A1[idx])
+                    elif alphabet == 2:
+                        if idx < len(A2):
+                            result.append(A2[idx])
+
+                # Reset alphabet after printing (V3+) or keep lock (V1/V2)
+                if self.header.version >= 3:
                     alphabet = 0
+                else:
+                    alphabet = lock_alphabet
 
             # Check if this is the last word (bit 15 set)
             if word & 0x8000:

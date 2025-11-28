@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "z2js"
-version = "0.1.0"
+version = "0.2.0"
 description = "Z-Machine to JavaScript compiler - convert Infocom-style text adventures to playable web games"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -39,4 +39,4 @@ Issues = "https://github.com/awohl/z2js/issues"
 z2js = "jsgen:main"
 
 [tool.setuptools]
-py-modules = ["jsgen", "zparser", "opcodes"]
+py-modules = ["jsgen", "zparser", "opcodes", "blorb"]
