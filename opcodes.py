@@ -66,8 +66,8 @@ class OpcodeDecoder:
         0x02: ("print", False, False),  # Followed by literal string
         0x03: ("print_ret", False, False),  # Print + rtrue
         0x04: ("nop", False, False),
-        0x05: ("save", False, True),  # V1-3 branch, V4+ store
-        0x06: ("restore", False, True),  # V1-3 branch, V4+ store
+        0x05: ("save", False, True),  # V1-3: branch; V4+: store (handled in decoder)
+        0x06: ("restore", False, True),  # V1-3: branch; V4+: store (handled in decoder)
         0x07: ("restart", False, False),
         0x08: ("ret_popped", False, False),
         0x09: ("pop", False, False),  # V1-4 catch, V5+ pop
@@ -141,7 +141,7 @@ class OpcodeDecoder:
         0x06: ("print_num", False, False),
         0x07: ("random", True, False),
         0x08: ("push", False, False),
-        0x09: ("pull", False, False),  # V1-5 pull [var], V6+ pull [stack]
+        0x09: ("pull", False, False),  # V1-5,V8: pull [var]; V6-7: pull -> store (handled in decoder)
         0x0A: ("split_window", False, False),  # V3+
         0x0B: ("set_window", False, False),  # V3+
         0x0C: ("call_vs2", True, False),  # V4+
@@ -250,6 +250,15 @@ class OpcodeDecoder:
             info = self.SHORT_1OP.get(opnum, (f"1op_{opnum:02x}", False, False))
 
         name, has_store, has_branch = info
+
+        # Version-specific opcode behavior for 0OP instructions:
+        # save (0x05) and restore (0x06):
+        # - V1-3: branch (no store)
+        # - V4+: store (no branch) - but V5+ typically uses extended form save/restore
+        if op_type == 0x03 and opnum in [0x05, 0x06]:
+            if self.version >= 4:
+                has_store = True
+                has_branch = False
 
         # Handle special cases
         if name in ["print", "print_ret"]:
@@ -385,6 +394,14 @@ class OpcodeDecoder:
 
         info = opcode_table.get(opnum, (f"var_{opnum:02x}", False, False))
         name, has_store, has_branch = info
+
+        # Version-specific opcode behavior:
+        # PULL (opcode 0x09 in VAR_VAR table):
+        # - V1-5, V8: pull (variable) - operand is target variable, NO store byte
+        # - V6-7: pull stack -> (result) - HAS store byte
+        if opcode_table == self.VAR_VAR and opnum == 0x09:
+            if self.version == 6 or self.version == 7:
+                has_store = True
 
         inst = Instruction(start_addr, opnum | 0xE0 if opcode_table == self.VAR_VAR else opnum | 0xC0,
                           name, operands)
