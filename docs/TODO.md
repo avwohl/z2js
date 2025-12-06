@@ -6,30 +6,39 @@ Last updated: 2025-12-06
 
 Both V3 (minizork) and V8 (lostpig) games display correctly and accept input in the browser. The core Z-Machine is functional.
 
-## Known Issues
+## Remaining Work
 
-### Minor Issues
+### High Priority
 
-1. **Node.js readline cleanup** - When piping input, readline throws ERR_USE_AFTER_CLOSE after stdin closes. Not a game bug, just needs better stream handling.
+1. **Text encoding bug** - Some special characters display incorrectly (e.g., parentheses in copyright messages show as wrong chars). Likely an alphabet table or ZSCII issue.
 
-2. **Text encoding edge cases** - Some special characters show as wrong character (e.g., parentheses sometimes appear wrong in copyright messages).
+### Medium Priority
 
-### Not Implemented (No-ops)
+2. **Node.js readline cleanup** - When piping input, readline throws ERR_USE_AFTER_CLOSE after stdin closes. Needs better stream handling for non-interactive use.
 
-These opcodes are stubbed but not fully implemented. Most games work without them:
+3. **Status line** - The HTML has a status bar but it's not updated by the game. Need to implement `show_status` (V3) or split-window model (V4+).
 
-- `show_status` (V3) - Status line updates
+### Low Priority (Stub Opcodes)
+
+These are no-ops that some games may need:
+
 - `erase_window` / `erase_line` (V4+) - Screen manipulation
 - `set_cursor` / `get_cursor` (V4+) - Cursor positioning
 - `set_text_style` (V4+) - Bold/italic/reverse
 - `buffer_mode` (V4+) - Output buffering
 - `output_stream` / `input_stream` - Stream redirection
-- `read_char` (V4+) - Single character input (returns newline)
+- `read_char` (V4+) - Single character input (currently returns newline)
 - `tokenise` (V5+) - Re-tokenization
 - `encode_text` (V5+) - Text encoding
 - `copy_table` (V5+) - Memory copying
 - `print_table` (V5+) - Formatted table printing
 - `sound_effect` - Audio playback
+
+### Future Enhancements
+
+- Server-side save support (currently browser localStorage only)
+- Blorb resource extraction for images/sounds
+- V6 graphics support
 
 ## Completed Features
 
