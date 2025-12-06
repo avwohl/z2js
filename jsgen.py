@@ -846,9 +846,9 @@ class ZMachine {
     }
 
     // Input handling
-    read(textBuffer, parseBuffer) {
+    read(textBuffer, parseBuffer, storeVar) {
         if (this.debugMode) {
-            console.error(`[READ] textBuffer=0x${textBuffer.toString(16)}, parseBuffer=0x${parseBuffer.toString(16)}`);
+            console.error(`[READ] textBuffer=0x${textBuffer.toString(16)}, parseBuffer=0x${parseBuffer.toString(16)}, storeVar=${storeVar}`);
         }
 
         this.running = false;
@@ -879,6 +879,11 @@ class ZMachine {
             // Tokenize if parse buffer provided
             if (parseBuffer && parseBuffer !== 0) {
                 self.tokenize(textBuffer, parseBuffer);
+            }
+
+            // For V5+, store the terminating character (13 = Enter/newline)
+            if (storeVar !== null) {
+                self.setVariable(storeVar, 13);
             }
 
             // Clear the callback and continue execution
@@ -1612,11 +1617,19 @@ ZMachine.prototype.executeVAR = function(opcode) {
         case 0x03: // put_prop
             this.putProperty(values[0], values[1], values[2]);
             break;
-        case 0x04: // read (sread in V5+)
+        case 0x04: // read (sread V1-4, aread V5+)
             if (this.debugMode) {
                 console.error(`[VAR 0x04 READ] Called with values[0]=0x${values[0].toString(16)}, values[1]=0x${values[1].toString(16)}`);
             }
-            this.read(values[0], values[1]);
+            if (VERSION >= 5) {
+                // V5+: aread has a store byte
+                const storeVar = this.readByte(this.pc);
+                this.pc++;
+                this.read(values[0], values[1], storeVar);
+            } else {
+                // V1-4: sread has no store byte
+                this.read(values[0], values[1], null);
+            }
             break;
         case 0x05: // print_char
             this.printChar(values[0]);
@@ -2668,14 +2681,17 @@ if (typeof module !== "undefined" && module.exports) {
 
         document.addEventListener('DOMContentLoaded', function() {{
             const output = document.getElementById('output');
+            const gameScreen = document.querySelector('.game-screen');
             const input = document.getElementById('input');
+            const locationEl = document.getElementById('location');
             zm = createZMachine();
             output.textContent = '';
+            locationEl.textContent = '';
             output.classList.remove('loading');
 
             zm.outputCallback = function(text) {{
                 output.textContent += text;
-                output.scrollTop = output.scrollHeight;
+                gameScreen.scrollTop = gameScreen.scrollHeight;
             }};
 
             zm.saveCallback = function(state) {{
@@ -2695,7 +2711,7 @@ if (typeof module !== "undefined" && module.exports) {
             }};
 
             input.disabled = false;
-            input.focus();
+            setTimeout(() => input.focus(), 0);
 
             input.addEventListener('keydown', function(e) {{
                 if (e.key === 'Enter') {{
@@ -2704,6 +2720,7 @@ if (typeof module !== "undefined" && module.exports) {
                         commandHistory.push(command);
                         historyIndex = commandHistory.length;
                         output.textContent += '> ' + command + '\\n';
+                        gameScreen.scrollTop = gameScreen.scrollHeight;
                         if (zm.inputCallback) zm.inputCallback(command);
                         input.value = '';
                     }}
