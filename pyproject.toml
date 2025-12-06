@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "z2js"
-version = "0.2.1"
+version = "0.2.2"
 description = "Z-Machine to JavaScript compiler - convert Infocom-style text adventures to playable web games"
 readme = "README.md"
 license = "GPL-3.0-or-later"
