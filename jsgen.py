@@ -692,16 +692,56 @@ class ZMachine {
             const sizeByte = this.readByte(propAddr);
             if (sizeByte === 0) break;
 
-            const num = sizeByte & 0x1F;
-            if (num === propNum) {
-                return propAddr + 1;
+            let num, size, dataOffset;
+            if (VERSION <= 3) {
+                // V1-3: Property number in bits 4-0, size in bits 7-5
+                num = sizeByte & 0x1F;
+                size = (sizeByte >> 5) + 1;
+                dataOffset = 1;
+            } else {
+                // V4+: Property number in bits 5-0
+                num = sizeByte & 0x3F;
+                if (sizeByte & 0x80) {
+                    // Two-byte size: second byte bits 5-0 = size (0 means 64)
+                    const sizeByte2 = this.readByte(propAddr + 1);
+                    size = sizeByte2 & 0x3F;
+                    if (size === 0) size = 64;
+                    dataOffset = 2;
+                } else {
+                    // One-byte size: bit 6 set = 2 bytes, clear = 1 byte
+                    size = (sizeByte & 0x40) ? 2 : 1;
+                    dataOffset = 1;
+                }
             }
 
-            const size = (sizeByte >> 5) + 1;
-            propAddr += 1 + size;
+            if (num === propNum) {
+                return propAddr + dataOffset;
+            }
+
+            propAddr += dataOffset + size;
         }
 
         return 0;
+    }
+
+    getPropertySize(propAddr) {
+        // Get the size of a property given the address of its DATA (after size byte(s))
+        // We need to look at the byte(s) before propAddr
+        if (VERSION <= 3) {
+            const sizeByte = this.readByte(propAddr - 1);
+            return (sizeByte >> 5) + 1;
+        } else {
+            // V4+: Could be 1 or 2 size bytes before the data
+            const prevByte = this.readByte(propAddr - 1);
+            if (prevByte & 0x80) {
+                // This is a second size byte
+                const size = prevByte & 0x3F;
+                return size === 0 ? 64 : size;
+            } else {
+                // This is a single size byte
+                return (prevByte & 0x40) ? 2 : 1;
+            }
+        }
     }
 
     getProperty(objNum, propNum) {
@@ -712,8 +752,7 @@ class ZMachine {
             return this.readWord(defaultAddr);
         }
 
-        const sizeByte = this.readByte(propAddr - 1);
-        const size = (sizeByte >> 5) + 1;
+        const size = this.getPropertySize(propAddr);
 
         if (size === 1) {
             return this.readByte(propAddr);
@@ -726,8 +765,7 @@ class ZMachine {
         const propAddr = this.getPropertyAddr(objNum, propNum);
         if (propAddr === 0) return;
 
-        const sizeByte = this.readByte(propAddr - 1);
-        const size = (sizeByte >> 5) + 1;
+        const size = this.getPropertySize(propAddr);
 
         if (size === 1) {
             this.writeByte(propAddr, value);
@@ -749,7 +787,8 @@ class ZMachine {
         if (propNum === 0) {
             // Return first property
             const sizeByte = this.readByte(propAddr);
-            return sizeByte & 0x1F;
+            if (sizeByte === 0) return 0;
+            return VERSION <= 3 ? (sizeByte & 0x1F) : (sizeByte & 0x3F);
         }
 
         // Search for property
@@ -757,17 +796,33 @@ class ZMachine {
             const sizeByte = this.readByte(propAddr);
             if (sizeByte === 0) break;
 
-            const num = sizeByte & 0x1F;
-            const size = (sizeByte >> 5) + 1;
+            let num, size, dataOffset;
+            if (VERSION <= 3) {
+                num = sizeByte & 0x1F;
+                size = (sizeByte >> 5) + 1;
+                dataOffset = 1;
+            } else {
+                num = sizeByte & 0x3F;
+                if (sizeByte & 0x80) {
+                    const sizeByte2 = this.readByte(propAddr + 1);
+                    size = sizeByte2 & 0x3F;
+                    if (size === 0) size = 64;
+                    dataOffset = 2;
+                } else {
+                    size = (sizeByte & 0x40) ? 2 : 1;
+                    dataOffset = 1;
+                }
+            }
 
             if (num === propNum) {
                 // Found current property, return next
-                propAddr += 1 + size;
+                propAddr += dataOffset + size;
                 const nextSizeByte = this.readByte(propAddr);
-                return nextSizeByte & 0x1F;
+                if (nextSizeByte === 0) return 0;
+                return VERSION <= 3 ? (nextSizeByte & 0x1F) : (nextSizeByte & 0x3F);
             }
 
-            propAddr += 1 + size;
+            propAddr += dataOffset + size;
         }
 
         return 0;
@@ -1118,6 +1173,11 @@ ZMachine.prototype.execute0OP = function(opcode) {
         case 0x0B: // new_line
             this.newLine();
             break;
+        case 0x0C: // show_status (V3 only)
+            // In V3, this updates the status line at the top of the screen
+            // We just no-op this since we don't have a proper status line implementation
+            // Games call this frequently but it's not critical for gameplay
+            break;
         case 0x0D: // verify
             this.branch(true); // Always succeed for now
             break;
@@ -1162,8 +1222,8 @@ ZMachine.prototype.execute1OP = function(opcode, operand) {
                 if (propAddr === 0) {
                     this.store(0);
                 } else {
-                    const sizeByte = this.readByte(propAddr - 1);
-                    this.store((sizeByte >> 5) + 1);
+                    // Use the shared getPropertySize function
+                    this.store(this.getPropertySize(propAddr));
                 }
             }
             break;
@@ -1422,8 +1482,9 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
             break;
         case 0x19: // call_2s (V4+)
             if (VERSION >= 4) {
-                this.callRoutine(val1, [val2], this.readByte(this.pc));
+                const storeVar = this.readByte(this.pc);
                 this.pc++;
+                this.callRoutine(val1, [val2], storeVar);
             }
             break;
         case 0x1A: // call_2n (V5+)
@@ -1487,13 +1548,25 @@ ZMachine.prototype.execute2OPVar = function(opcode) {
 
 // VAR Instructions
 ZMachine.prototype.executeVAR = function(opcode) {
-    // Read operand types
-    const types = this.readByte(this.pc);
-    this.pc++;
+    // Double-VAR opcodes (call_vs2 = 0x0C, call_vn2 = 0x1A) use 2 types bytes for up to 8 operands
+    const isDoubleVar = (opcode === 0x0C || opcode === 0x1A);
+
+    // Read operand types (1 or 2 bytes depending on opcode)
+    let types;
+    let maxOperands;
+    if (isDoubleVar) {
+        types = (this.readByte(this.pc) << 8) | this.readByte(this.pc + 1);
+        this.pc += 2;
+        maxOperands = 8;
+    } else {
+        types = this.readByte(this.pc) << 8;  // Shift to high byte for consistent handling
+        this.pc++;
+        maxOperands = 4;
+    }
 
     const operands = [];
-    for (let i = 0; i < 4; i++) {
-        const opType = (types >> (6 - i * 2)) & 0x03;
+    for (let i = 0; i < maxOperands; i++) {
+        const opType = (types >> (14 - i * 2)) & 0x03;
         if (opType === 3) break; // No more operands
         if (opType === 0) {
             operands.push(this.readWord(this.pc));
@@ -1581,7 +1654,7 @@ ZMachine.prototype.executeVAR = function(opcode) {
         case 0x0B: // set_window (V3+)
             this.currentWindow = values[0];
             break;
-        case 0x0D: // call_vs2 (V4+)
+        case 0x0C: // call_vs2 (V4+)
             if (VERSION >= 4) {
                 const packedAddr = values[0];
                 const args = values.slice(1);
@@ -1590,31 +1663,31 @@ ZMachine.prototype.executeVAR = function(opcode) {
                 this.callRoutine(packedAddr, args, storeVar);
             }
             break;
-        case 0x0E: // erase_window (V4+)
+        case 0x0D: // erase_window (V4+)
             // Not implemented - no-op
             break;
-        case 0x0F: // erase_line (V4+)
+        case 0x0E: // erase_line (V4+)
             // Not implemented - no-op
             break;
-        case 0x10: // set_cursor (V4+)
+        case 0x0F: // set_cursor (V4+)
             // Not implemented - no-op
             break;
-        case 0x11: // get_cursor (V4+)
+        case 0x10: // get_cursor (V4+)
             // Not implemented - no-op
             break;
-        case 0x12: // set_text_style (V4+)
+        case 0x11: // set_text_style (V4+)
             // Not implemented - no-op
             break;
-        case 0x13: // buffer_mode (V4+)
+        case 0x12: // buffer_mode (V4+)
             // Not implemented - no-op
             break;
-        case 0x14: // output_stream
+        case 0x13: // output_stream (V3+)
             // Not implemented - no-op
             break;
-        case 0x15: // input_stream
+        case 0x14: // input_stream (V3+)
             // Not implemented - no-op
             break;
-        case 0x16: // sound_effect (V3+)
+        case 0x15: // sound_effect (V3+)
             {
                 // sound_effect number effect volume routine
                 // effect: 1=prepare, 2=start, 3=stop, 4=finish
@@ -1656,41 +1729,51 @@ ZMachine.prototype.executeVAR = function(opcode) {
                 }
             }
             break;
-        case 0x17: // read_char (V4+)
-            // Would need async input
+        case 0x16: // read_char (V4+)
+            // Would need async input - for now just return immediately with newline
+            // This is a stub that doesn't wait for actual input
             this.store(13); // Return newline for now
             break;
-        case 0x18: // scan_table (V4+)
+        case 0x17: // scan_table (V4+)
             {
                 const result = this.scanTable(values[0], values[1], values[2], values[3] || 0x82);
                 this.store(result);
                 this.branch(result !== 0);
             }
             break;
-        case 0x19: // not (bitwise not)
+        case 0x18: // not (bitwise not) - V5+, but also used in V1-4 as VAR form
             this.store(~values[0] & 0xFFFF);
             break;
-        case 0x1A: // call_vn (V5+)
+        case 0x19: // call_vn (V5+)
             if (VERSION >= 5) {
                 this.callRoutine(values[0], values.slice(1), null);
             }
             break;
-        case 0x1B: // call_vn2 (V5+)
+        case 0x1A: // call_vn2 (V5+)
             if (VERSION >= 5) {
                 this.callRoutine(values[0], values.slice(1), null);
             }
             break;
-        case 0x1C: // tokenise (V5+)
+        case 0x1B: // tokenise (V5+)
             // Not implemented - no-op
             break;
-        case 0x1D: // encode_text (V5+)
+        case 0x1C: // encode_text (V5+)
             // Not implemented - no-op
             break;
-        case 0x1E: // copy_table (V5+)
+        case 0x1D: // copy_table (V5+)
             // Not implemented - no-op
             break;
-        case 0x1F: // print_table (V5+)
+        case 0x1E: // print_table (V5+)
             // Not implemented - no-op
+            break;
+        case 0x1F: // check_arg_count (V5+)
+            {
+                // Check if argument number N was provided to current routine
+                const argNum = values[0];
+                // For now, assume all explicitly passed args are present
+                // This is a simplification - would need to track actual arg count
+                this.branch(argNum <= this.locals.length);
+            }
             break;
         default:
             throw new Error(`Unimplemented VAR opcode: 0x${opcode.toString(16)}`);
@@ -2165,6 +2248,13 @@ ZMachine.prototype.callRoutine = function(packedAddr, args, storeVar) {
 
     // Sanity check - Z-Machine routines can have at most 15 locals
     if (numLocals > 15) {
+        console.error(`[CALL ERROR] Invalid routine - dumping call stack:`);
+        for (let i = this.callStack.length - 1; i >= 0; i--) {
+            const frame = this.callStack[i];
+            console.error(`  Frame ${i}: returnPC=0x${frame.returnPC.toString(16)}, storeVar=${frame.storeVar}`);
+        }
+        console.error(`[CALL ERROR] Current locals: ${this.locals.slice(0, 16).map((v, i) => `L${i+1}=0x${(v||0).toString(16)}`).join(', ')}`);
+        console.error(`[CALL ERROR] Stack top 10: [${this.stack.slice(-10).map(v => '0x' + v.toString(16)).join(', ')}]`);
         throw new Error(`Invalid routine at 0x${addr.toString(16)} (packed: 0x${packedAddr.toString(16)}): numLocals=${numLocals} exceeds maximum of 15`);
     }
 
@@ -2318,6 +2408,9 @@ ZMachine.prototype.run = function() {
         console.error(`[RUN] Entry: PC=0x${entryPC.toString(16)} stack=${entryStack} inst=${entryInst}`);
     }
 
+    // Always increment instruction count (used for yielding in browser)
+    let localInstructionCount = 0;
+
     while (this.running && !this.finished) {
         try {
             const currentPC = this.pc;
@@ -2327,6 +2420,7 @@ ZMachine.prototype.run = function() {
                 this.recordInstruction(currentPC, opcode);
                 this.instructionCount++;
             }
+            localInstructionCount++;
 
             this.executeInstruction();
 
@@ -2354,8 +2448,8 @@ ZMachine.prototype.run = function() {
             break;
         }
 
-        // Yield periodically for UI updates
-        if (this.instructionCount % 1000 === 0 && typeof window !== "undefined") {
+        // Yield periodically for UI updates (every 1000 instructions)
+        if (localInstructionCount % 1000 === 0 && typeof window !== "undefined") {
             setTimeout(() => this.run(), 0);
             return;
         }
@@ -2661,6 +2755,9 @@ def main():
     # Determine output filename
     if args.output:
         output_file = args.output
+        # Ensure .js extension
+        if not output_file.endswith('.js'):
+            output_file += '.js'
     else:
         base = os.path.splitext(args.story_file)[0]
         output_file = base + '.js'
