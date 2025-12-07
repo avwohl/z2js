@@ -119,6 +119,12 @@ class ZMachine {
         this.currentSound = null; // Currently playing audio element
         this.graphicsCallback = null;  // Function to call for drawing pictures
         this.soundCallback = null;     // Function to call for playing sounds
+
+        // Transcript recording (zwalker-compatible format)
+        this.transcriptEnabled = false;
+        this.transcriptData = [];     // Array of { command, from_room, to_room, result }
+        this.lastCommand = null;
+        this.lastRoomNumber = null;
     }
 
     // Memory access
@@ -465,12 +471,17 @@ class ZMachine {
     testAttribute(objNum, attrNum) {
         if (objNum === 0) return false;
 
-        const obj = this.getObject(objNum);
+        // Read directly from memory to avoid 32-bit JavaScript bitwise limitations
+        let objAddr;
         if (VERSION <= 3) {
-            return !!(obj.attributes & (1 << (31 - attrNum)));
+            objAddr = OBJECT_TABLE_ADDR + 62 + (objNum - 1) * 9;
         } else {
-            return !!(obj.attributes & (1 << (47 - attrNum)));
+            objAddr = OBJECT_TABLE_ADDR + 126 + (objNum - 1) * 14;
         }
+        const byteNum = Math.floor(attrNum / 8);
+        const bitNum = 7 - (attrNum % 8);
+        const b = this.readByte(objAddr + byteNum);
+        return !!(b & (1 << bitNum));
     }
 
     setAttribute(objNum, attrNum) {
@@ -511,8 +522,43 @@ class ZMachine {
         }
     }
 
+    // Room tracking for transcript
+    getCurrentRoom() {
+        // Method 1: Infocom convention - global 0 is the room
+        const room = this.readWord(GLOBALS_ADDR);
+        if (room > 0 && room < 1000) {  // Reasonable object number
+            return room;
+        }
+
+        // Method 2: Inform convention - find player object and get parent
+        // Player is usually object 1 in Inform games
+        try {
+            const player = this.getObject(1);
+            if (player && player.parent > 0) {
+                return player.parent;
+            }
+        } catch (e) {
+            // Ignore errors
+        }
+
+        // Fallback: return 0 (unknown room)
+        return 0;
+    }
+
     // Output functions
     print(text) {
+        // If printing to status window (window 1) and transcript is enabled,
+        // append room number to the status line
+        if (this.currentWindow === 1 && this.transcriptEnabled && text.includes('\\n')) {
+            const room = this.getCurrentRoom();
+            if (room > 0) {
+                // Insert room number before the newline
+                text = text.replace(/\\n/g, ` [Room ${room}]\\n`);
+                // Also update the statusLine object for external rendering
+                this.statusLine.room = room;
+            }
+        }
+
         this.outputBuffer += text;
         if (this.outputCallback) {
             this.outputCallback(text);
@@ -541,16 +587,25 @@ class ZMachine {
 
     // Random number generation
     random(range) {
-        if (range <= 0) {
-            // Seed the generator
+        // Handle as signed 16-bit
+        if (range > 32767) range = range - 65536;
+
+        if (range === 0) {
+            // random(0): Reset to truly random mode
+            this.randomMode = "random";
+            return 0;
+        }
+
+        if (range < 0) {
+            // random(negative): Seed the predictable generator
             this.randomSeed = -range;
             this.randomMode = "predictable";
-            this.randomIndex = 0;
+            this.randomIndex = this.randomSeed;  // Seed IS the initial state
             return 0;
         }
 
         if (this.randomMode === "predictable") {
-            // Simple predictable sequence
+            // Linear congruential generator
             this.randomIndex = (this.randomIndex * 1103515245 + 12345) & 0x7FFFFFFF;
             return (this.randomIndex % range) + 1;
         } else {
@@ -614,6 +669,48 @@ class ZMachine {
         this.running = false;
         this.finished = true;
         this.print("\\n[Game terminated]\\n");
+    }
+
+    // Transcript recording (zwalker-compatible format)
+    enableTranscript() {
+        this.transcriptEnabled = true;
+        this.transcriptData = [];
+        this.lastRoomNumber = this.getCurrentRoom();
+        this.print("\\n[Transcript recording enabled]\\n");
+    }
+
+    disableTranscript() {
+        this.transcriptEnabled = false;
+        this.print("\\n[Transcript recording disabled]\\n");
+    }
+
+    getTranscript() {
+        // Return transcript in zwalker-compatible JSON format
+        const rooms = new Set();
+        const commands = [];
+
+        this.transcriptData.forEach(entry => {
+            rooms.add(entry.from_room);
+            rooms.add(entry.to_room);
+            commands.push(entry.command);
+        });
+
+        return {
+            game: "unknown",  // Will be filled in by caller
+            solved: false,    // User can set this manually
+            rooms_visited: Array.from(rooms).filter(r => r > 0),
+            solution_commands: commands,
+            full_solution_data: this.transcriptData,
+            stats: {
+                rooms_found: rooms.size,
+                commands_tried: this.transcriptData.length
+            }
+        };
+    }
+
+    exportTranscript() {
+        // Return transcript as JSON string
+        return JSON.stringify(this.getTranscript(), null, 2);
     }
 
     // Object name lookup
@@ -860,6 +957,9 @@ class ZMachine {
                 console.error(`[INPUT] Received: "${input}"`);
             }
 
+            // Record room before command for transcript
+            const roomBefore = self.transcriptEnabled ? self.getCurrentRoom() : null;
+
             // Store input in text buffer
             const maxLen = self.readByte(textBuffer);
             const actualLen = Math.min(input.length, maxLen);
@@ -885,6 +985,55 @@ class ZMachine {
             if (storeVar !== null) {
                 self.setVariable(storeVar, 13);
             }
+
+            // Record transcript data after command is processed
+            if (self.transcriptEnabled) {
+                // Use a short delay to let the game process the command first
+                setTimeout(() => {
+                    const roomAfter = self.getCurrentRoom();
+                    self.transcriptData.push({
+                        command: input.toUpperCase(),
+                        from_room: roomBefore,
+                        to_room: roomAfter,
+                        result: roomBefore !== roomAfter ? "moved" : "boring"
+                    });
+                    self.lastCommand = input.toUpperCase();
+                    self.lastRoomNumber = roomAfter;
+                }, 10);
+            }
+
+            // Clear the callback and continue execution
+            self.inputCallback = null;
+            self.running = true;
+            setTimeout(() => self.run(), 0);
+        };
+    }
+
+    // Single character input (read_char opcode)
+    readChar(storeVar) {
+        if (this.debugMode) {
+            console.error(`[READ_CHAR] storeVar=${storeVar}`);
+        }
+
+        this.running = false;
+
+        // Set up the input handler - will be called when input arrives
+        const self = this;
+        this.inputCallback = function(input) {
+            if (self.debugMode) {
+                console.error(`[READ_CHAR INPUT] Received: "${input}"`);
+            }
+
+            // Get the character code (first character of input, or 13 for empty/enter)
+            let charCode;
+            if (input.length === 0) {
+                charCode = 13; // Enter/newline
+            } else {
+                charCode = input.charCodeAt(0);
+            }
+
+            // Store the character code
+            self.setVariable(storeVar, charCode);
 
             // Clear the callback and continue execution
             self.inputCallback = null;
@@ -1172,6 +1321,9 @@ ZMachine.prototype.execute0OP = function(opcode) {
                 this.returnFromRoutine(value);
             }
             break;
+        case 0x09: // pop (discard top of stack)
+            this.pop();
+            break;
         case 0x0A: // quit
             this.quit();
             break;
@@ -1319,7 +1471,8 @@ ZMachine.prototype.execute1OP = function(opcode, operand) {
                 if (this.debugMode && this.instructionCount < 20) {
                     console.error(`  LOAD from var ${varNum} (stack size: ${this.stack.length})`);
                 }
-                const val = this.getVariable(varNum);
+                // When loading from sp (var 0) indirectly, peek instead of pop
+                const val = (varNum === 0) ? this.peek() : this.getVariable(varNum);
                 this.store(val);
             }
             break;
@@ -1411,7 +1564,13 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
             this.clearAttribute(val1, val2);
             break;
         case 0x0D: // store (variable)
-            this.setVariable(val1, val2);
+            // When storing to sp (var 0) indirectly, replace top instead of push
+            if (val1 === 0) {
+                this.pop();  // Remove current top
+                this.push(val2);  // Push new value
+            } else {
+                this.setVariable(val1, val2);
+            }
             break;
         case 0x0E: // insert_obj
             this.insertObject(val1, val2);
@@ -1658,7 +1817,13 @@ ZMachine.prototype.executeVAR = function(opcode) {
             } else {
                 // V1-5, V8: Pop and store in variable specified by operand
                 const value = this.pop();
-                this.setVariable(values[0], value);
+                // When pulling to sp (var 0) indirectly, replace top instead of push
+                if (values[0] === 0) {
+                    this.pop();  // Remove current top
+                    this.push(value);  // Push the pulled value
+                } else {
+                    this.setVariable(values[0], value);
+                }
             }
             break;
         case 0x0A: // split_window (V3+)
@@ -1743,9 +1908,14 @@ ZMachine.prototype.executeVAR = function(opcode) {
             }
             break;
         case 0x16: // read_char (V4+)
-            // Would need async input - for now just return immediately with newline
-            // This is a stub that doesn't wait for actual input
-            this.store(13); // Return newline for now
+            {
+                // read_char device [time routine] -> (result)
+                // device is always 1 (keyboard)
+                // For now we ignore timed input
+                const storeVar = this.readByte(this.pc);
+                this.pc++;
+                this.readChar(storeVar);
+            }
             break;
         case 0x17: // scan_table (V4+)
             {
@@ -2671,6 +2841,8 @@ if (typeof module !== "undefined" && module.exports) {
             <button id="save-btn">Save Game</button>
             <button id="restore-btn">Load Game</button>
             <button id="restart-btn">Restart</button>
+            <button id="transcript-btn">Enable Transcript</button>
+            <button id="export-btn" style="display:none;">Export Transcript</button>
         </div>
     </div>
     <script src="{js_filename}"></script>
@@ -2693,6 +2865,30 @@ if (typeof module !== "undefined" && module.exports) {
                 output.textContent += text;
                 gameScreen.scrollTop = gameScreen.scrollHeight;
             }};
+
+            // Update status bar periodically
+            const scoreEl = document.getElementById('score');
+            setInterval(function() {{
+                if (zm.statusLine) {{
+                    let statusText = '';
+                    if (zm.statusLine.location) {{
+                        locationEl.textContent = zm.statusLine.location;
+                    }}
+
+                    // Build score display
+                    statusText = 'Score: ' + (zm.statusLine.score || 0) + ' | Moves: ' + (zm.statusLine.turns || 0);
+
+                    // Add room number if transcript is enabled
+                    if (zm.transcriptEnabled) {{
+                        const currentRoom = zm.getCurrentRoom();
+                        if (currentRoom > 0) {{
+                            statusText += ' | Room: ' + currentRoom;
+                        }}
+                    }}
+
+                    scoreEl.textContent = statusText;
+                }}
+            }}, 100);
 
             zm.saveCallback = function(state) {{
                 try {{
@@ -2734,14 +2930,49 @@ if (typeof module !== "undefined" && module.exports) {
                 }}
             }});
 
-            document.getElementById('save-btn').addEventListener('click', () => zm.save());
+            document.getElementById('save-btn').addEventListener('click', () => {{ zm.save(); setTimeout(() => input.focus(), 0); }});
             document.getElementById('restore-btn').addEventListener('click', function() {{
                 const state = zm.restoreCallback();
                 if (zm.restore(state)) output.textContent += '\\n[Game restored]\\n';
                 else output.textContent += '\\n[No saved game found]\\n';
+                setTimeout(() => input.focus(), 0);
             }});
             document.getElementById('restart-btn').addEventListener('click', function() {{
                 if (confirm('Restart the game?')) {{ zm.restart(); output.textContent = ''; }}
+                setTimeout(() => input.focus(), 0);
+            }});
+
+            const transcriptBtn = document.getElementById('transcript-btn');
+            const exportBtn = document.getElementById('export-btn');
+
+            transcriptBtn.addEventListener('click', function() {{
+                if (zm.transcriptEnabled) {{
+                    zm.disableTranscript();
+                    transcriptBtn.textContent = 'Enable Transcript';
+                    exportBtn.style.display = 'none';
+                }} else {{
+                    zm.enableTranscript();
+                    transcriptBtn.textContent = 'Disable Transcript';
+                    exportBtn.style.display = 'inline-block';
+                }}
+                // Refocus input after clicking button
+                setTimeout(() => input.focus(), 0);
+            }});
+
+            exportBtn.addEventListener('click', function() {{
+                const transcript = zm.exportTranscript();
+                const blob = new Blob([transcript], {{ type: 'application/json' }});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'transcript.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                output.textContent += '\\n[Transcript exported to transcript.json]\\n';
+                // Refocus input after clicking button
+                setTimeout(() => input.focus(), 0);
             }});
 
             try {{ zm.run(); }} catch(e) {{ output.textContent = 'Error: ' + e.message; console.error(e); }}
