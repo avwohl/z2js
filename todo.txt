@@ -1,0 +1,6 @@
+Project ~/src/zwalker used AI to solve them.
+It made .json files for you and some test rig
+to play thru the games from start to end to make sure
+you dont crash.
+It made a first batch of 5 games. try them out and fix
+any bugs that come up and keep a log of what is tested.
