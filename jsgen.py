@@ -75,7 +75,27 @@ const STRINGS_OFFSET = 0x{h.strings_offset:04X};'''
 
     def _generate_runtime(self) -> str:
         """Generate the Z-Machine runtime system"""
-        return '''// Z-Machine Runtime
+        return '''// Default ZSCII-to-Unicode translation table (codes 155-223)
+// Per Z-Machine Standard 1.0, Section 3.8.5
+const ZSCII_TO_UNICODE = [
+    0xE4, 0xF6, 0xFC, 0xC4, 0xD6, 0xDC, 0xDF, 0xBB, 0xAB, 0xEB,  // 155-164
+    0xEF, 0xFF, 0xCB, 0xCF, 0xE1, 0xE9, 0xED, 0xF3, 0xFA, 0xFD,  // 165-174
+    0xC1, 0xC9, 0xCD, 0xD3, 0xDA, 0xDD, 0xE0, 0xE8, 0xEC, 0xF2,  // 175-184
+    0xF9, 0xC0, 0xC8, 0xCC, 0xD2, 0xD9, 0xE2, 0xEA, 0xEE, 0xF4,  // 185-194
+    0xFB, 0xC2, 0xCA, 0xCE, 0xD4, 0xDB, 0xE5, 0xC5, 0xF8, 0xD8,  // 195-204
+    0xE3, 0xF1, 0xF5, 0xC3, 0xD1, 0xD5, 0xE6, 0xC6, 0xE7, 0xC7,  // 205-214
+    0xFE, 0xF0, 0xDE, 0xD0, 0xA3, 0x153, 0x152, 0xA1, 0xBF        // 215-223
+];
+
+function zsciiToChar(code) {
+    if (code === 13) return "\\n";
+    if (code >= 32 && code <= 126) return String.fromCharCode(code);
+    if (code >= 155 && code <= 223) return String.fromCharCode(ZSCII_TO_UNICODE[code - 155]);
+    if (code >= 224 && code <= 251) return "?";  // Extra characters without default mapping
+    return "";
+}
+
+// Z-Machine Runtime
 class ZMachine {
     constructor(storyData) {
         // Memory
@@ -276,7 +296,7 @@ class ZMachine {
                     continue;
                 } else if (zsciiState === 2) {
                     const zsciiCode = (zsciiHigh << 5) | c;
-                    if (zsciiCode > 0) result += String.fromCharCode(zsciiCode);
+                    if (zsciiCode > 0) result += zsciiToChar(zsciiCode);
                     zsciiState = 0;
                     alphabet = lockAlphabet;
                     continue;
@@ -574,11 +594,7 @@ class ZMachine {
     }
 
     printChar(charCode) {
-        if (charCode === 13) {
-            this.print("\\n");
-        } else {
-            this.print(String.fromCharCode(charCode));
-        }
+        this.print(zsciiToChar(charCode));
     }
 
     newLine() {

@@ -57,6 +57,31 @@ class ZObject:
     properties: int
 
 
+    # Default ZSCII-to-Unicode translation table (codes 155-223)
+    # Per Z-Machine Standard 1.0, Section 3.8.5
+ZSCII_TO_UNICODE = [
+    0xE4, 0xF6, 0xFC, 0xC4, 0xD6, 0xDC, 0xDF, 0xBB, 0xAB, 0xEB,  # 155-164
+    0xEF, 0xFF, 0xCB, 0xCF, 0xE1, 0xE9, 0xED, 0xF3, 0xFA, 0xFD,  # 165-174
+    0xC1, 0xC9, 0xCD, 0xD3, 0xDA, 0xDD, 0xE0, 0xE8, 0xEC, 0xF2,  # 175-184
+    0xF9, 0xC0, 0xC8, 0xCC, 0xD2, 0xD9, 0xE2, 0xEA, 0xEE, 0xF4,  # 185-194
+    0xFB, 0xC2, 0xCA, 0xCE, 0xD4, 0xDB, 0xE5, 0xC5, 0xF8, 0xD8,  # 195-204
+    0xE3, 0xF1, 0xF5, 0xC3, 0xD1, 0xD5, 0xE6, 0xC6, 0xE7, 0xC7,  # 205-214
+    0xFE, 0xF0, 0xDE, 0xD0, 0xA3, 0x153, 0x152, 0xA1, 0xBF,       # 215-223
+]
+
+def zscii_to_char(code: int) -> str:
+    """Convert a ZSCII code to a Unicode character."""
+    if code == 13:
+        return '\n'
+    if 32 <= code <= 126:
+        return chr(code)
+    if 155 <= code <= 223:
+        return chr(ZSCII_TO_UNICODE[code - 155])
+    if 224 <= code <= 251:
+        return '?'  # Extra characters without default mapping
+    return ''
+
+
 class ZParser:
     """Parser for Z-Machine story files"""
 
@@ -223,7 +248,7 @@ class ZParser:
                 elif zscii_state == 2:
                     zscii_char = (zscii_high << 5) | char_code
                     if zscii_char > 0:
-                        result.append(chr(zscii_char))
+                        result.append(zscii_to_char(zscii_char))
                     zscii_state = 0
                     alphabet = lock_alphabet  # Reset to lock alphabet
                     continue
