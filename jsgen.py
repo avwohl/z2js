@@ -95,6 +95,16 @@ function zsciiToChar(code) {
     return "";
 }
 
+// Reverse map a single Unicode character to a ZSCII code (for output stream 3).
+function charToZscii(ch) {
+    if (ch === "\\n") return 13;
+    const code = ch.charCodeAt(0);
+    if (code >= 32 && code <= 126) return code;
+    const idx = ZSCII_TO_UNICODE.indexOf(code);
+    if (idx >= 0) return 155 + idx;
+    return 63;  // '?' for anything not representable in ZSCII
+}
+
 // Z-Machine Runtime
 class ZMachine {
     constructor(storyData) {
@@ -113,6 +123,10 @@ class ZMachine {
         this.statusLine = { location: "", score: 0, turns: 0 };
         this.windows = [{ text: "", cursor: [1, 1] }, { text: "", cursor: [1, 1] }];
         this.currentWindow = 0;
+        // Output stream 3 (redirect-to-table) capture stack. Each entry:
+        // { table, bytes: [] }. When non-empty, output goes ONLY to the
+        // innermost table and is suppressed from screen/transcript.
+        this.outputStream3 = [];
 
         // Interpreter state
         this.running = false;
@@ -262,8 +276,8 @@ class ZMachine {
         // A2 alphabet varies by version
         // V1: no newline, digits start at position 1 (z-char 7 = '0')
         // V2+: newline at position 1, digits start at position 2 (z-char 8 = '0')
-        const a2_v1 = " 0123456789.,!?_#'\\"/<-:()";
-        const a2_v2plus = " \\n0123456789.,!?_#'\\"/-:()";
+        const a2_v1 = " 0123456789.,!?_#'\\"/\\\\<-:()";
+        const a2_v2plus = " \\n0123456789.,!?_#'\\"/\\\\-:()";
 
         const alphabets = [
             "abcdefghijklmnopqrstuvwxyz",      // A0 (lowercase)
@@ -567,6 +581,16 @@ class ZMachine {
 
     // Output functions
     print(text) {
+        // Output stream 3 active: redirect all text to the innermost table
+        // and suppress it from every other stream (screen/transcript).
+        if (this.outputStream3.length > 0) {
+            const capture = this.outputStream3[this.outputStream3.length - 1];
+            for (let i = 0; i < text.length; i++) {
+                capture.bytes.push(charToZscii(text[i]));
+            }
+            return;
+        }
+
         // If printing to status window (window 1) and transcript is enabled,
         // append room number to the status line
         if (this.currentWindow === 1 && this.transcriptEnabled && text.includes('\\n')) {
@@ -1111,9 +1135,12 @@ class ZMachine {
                 console.error(`[TOKENIZE] Word ${i}: "${word}" -> dictAddr=0x${dictAddr.toString(16)}`);
             }
 
-            // Find word position in text (1-indexed)
+            // Find word position in text (byte offset into the text buffer).
+            // The text itself starts at textBuffer+1 in V1-4 but textBuffer+2 in
+            // V5+ (where byte 1 holds the input length), so the base differs.
             const wordStart = text.indexOf(word, textPos);
-            const position = wordStart + 1;  // 1-indexed position in text
+            const textBase = (VERSION <= 4) ? 1 : 2;
+            const position = wordStart + textBase;
             textPos = wordStart + word.length;
 
             // Write word entry: dict-addr (2 bytes), length (1 byte), position (1 byte)
@@ -1337,8 +1364,13 @@ ZMachine.prototype.execute0OP = function(opcode) {
                 this.returnFromRoutine(value);
             }
             break;
-        case 0x09: // pop (discard top of stack)
-            this.pop();
+        case 0x09: // pop (V1-4) / catch (V5+)
+            if (VERSION >= 5) {
+                // catch: store the current call-stack depth as a frame token
+                this.store(this.callStack.length);
+            } else {
+                this.pop();
+            }
             break;
         case 0x0A: // quit
             this.quit();
@@ -1676,7 +1708,15 @@ ZMachine.prototype.execute2OP = function(opcode, operand1, operand2) {
             // Not implemented - no-op
             break;
         case 0x1C: // throw (V5+)
-            // Not implemented
+            {
+                // Unwind the call stack to the frame token captured by catch,
+                // then return val1 from that (catching) routine.
+                const frameToken = val2;
+                while (this.callStack.length > frameToken) {
+                    this.callStack.pop();
+                }
+                this.returnFromRoutine(val1);
+            }
             break;
         default:
             throw new Error(`Unimplemented 2OP opcode: 0x${opcode.toString(16)}`);
@@ -1876,7 +1916,29 @@ ZMachine.prototype.executeVAR = function(opcode) {
             // Not implemented - no-op
             break;
         case 0x13: // output_stream (V3+)
-            // Not implemented - no-op
+            {
+                // values[0] is a signed stream number; positive selects, negative deselects.
+                let stream = values[0];
+                if (stream > 32767) stream -= 65536;
+                if (stream === 3) {
+                    // Begin redirecting to the table at values[1] (nesting up to 16 deep).
+                    if (this.outputStream3.length < 16) {
+                        this.outputStream3.push({ table: values[1], bytes: [] });
+                    }
+                } else if (stream === -3) {
+                    // Stop redirecting: write the captured length word then the bytes.
+                    const capture = this.outputStream3.pop();
+                    if (capture) {
+                        const len = capture.bytes.length;
+                        this.writeWord(capture.table, len);
+                        for (let i = 0; i < len; i++) {
+                            this.writeByte(capture.table + 2 + i, capture.bytes[i]);
+                        }
+                    }
+                }
+                // Streams 1 (screen) and 2 (transcript) and 4 (input log):
+                // selecting/deselecting them is a no-op in this runtime.
+            }
             break;
         case 0x14: // input_stream (V3+)
             // Not implemented - no-op
