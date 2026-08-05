@@ -16,7 +16,7 @@ A Python compiler that converts Z-machine story files (.z1-.z8) to playable Java
 pip install z2js
 ```
 
-For development or from source, see [INSTALL.md](INSTALL.md).
+For development or from source, see [INSTALL.md](docs/INSTALL.md).
 
 ## Usage
 

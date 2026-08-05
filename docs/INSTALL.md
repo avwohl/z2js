@@ -9,7 +9,7 @@ pip install z2js
 ## From Source
 
 ```bash
-git clone https://github.com/awohl/z2js.git
+git clone https://github.com/avwohl/z2js.git
 cd z2js
 pip install .
 ```
@@ -19,7 +19,7 @@ pip install .
 For development with editable installs:
 
 ```bash
-git clone https://github.com/awohl/z2js.git
+git clone https://github.com/avwohl/z2js.git
 cd z2js
 pip install -e .
 ```
