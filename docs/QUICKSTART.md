@@ -69,6 +69,8 @@ Perfect for debugging!
 
 ## More Info
 
-- `README.md` - Full documentation
+- `README.md` - Overview, with links to the rest of the documentation
+- `RUNNING.md` - Browser play and Node.js usage
+- `ARCHITECTURE.md` - How the compiler and the generated runtime work
 - `FIXED_AND_WORKING.md` - What's working and what's not
 - `STATUS.md` - Detailed project status

@@ -47,137 +47,18 @@ z2js game.z3 -v
 z2js --help
 ```
 
-## Project Structure
+Open `game.html` in a browser, or run `node game.js` in a terminal.
 
-```
-z2js/
-├── z2js           # Main compiler executable
-├── zparser.py     # Z-machine file parser
-├── opcodes.py     # Opcode decoder and instruction set
-├── jsgen.py       # JavaScript code generator
-└── test-output/   # Test compilation outputs
-```
+## Documentation
 
-## Architecture
-
-### Components
-
-1. **Parser (zparser.py)**
-   - Reads Z-machine story files
-   - Parses headers, objects, dictionary
-   - Decodes Z-strings and packed addresses
-
-2. **Opcode Decoder (opcodes.py)**
-   - Decodes all instruction forms (short, long, variable, extended)
-   - Handles version-specific opcodes
-   - Tracks operands, store variables, and branch targets
-
-3. **JavaScript Generator (jsgen.py)**
-   - Generates optimized JavaScript runtime
-   - Embeds story data as base64
-   - Creates complete Z-machine interpreter in JavaScript
-
-### Runtime Features
-
-The generated JavaScript runtime includes:
-
-- **Memory management**: Dynamic and static memory regions
-- **Stack machine**: Call stack and evaluation stack
-- **Object system**: Full object tree with attributes and properties
-- **I/O system**: Text output, keyboard input, save/restore
-- **Z-string decoder**: Handles abbreviations and special characters
-
-## Supported Games
-
-The compiler has been tested with:
-- Zork I-III
-- Planetfall
-- Enchanter
-- Mini-Zork
-- Most Inform 6/7 compiled games
-
-## Browser Play
-
-Open the generated HTML file in any modern browser:
-
-```bash
-# After compilation
-open game.html  # macOS
-xdg-open game.html  # Linux
-start game.html  # Windows
-```
-
-Features in the browser interface:
-- Retro terminal styling with green-on-black text
-- Command history (arrow keys)
-- Save/Load buttons
-- Restart functionality
-- Responsive design
-
-## Node.js Usage
-
-### Simple - Just run it:
-```bash
-node game.js
-```
-
-The game will automatically start when you run the file directly!
-
-### Advanced - Use as a module:
-```javascript
-// Load the generated module
-const { createZMachine } = require('./game.js');
-
-// Create and run the Z-machine
-const zm = createZMachine();
-
-// Set up I/O callbacks
-zm.outputCallback = (text) => process.stdout.write(text);
-zm.inputCallback = // ... handle input
-
-// Start the game
-zm.run();
-```
-
-## Technical Details
-
-### Z-Machine Versions
-
-| Version | Max Size | Features | Status |
-|---------|----------|----------|--------|
-| 1-2 | 128KB | Basic | ✓ Supported |
-| 3 | 128KB | Standard | ✓ Supported |
-| 4 | 256KB | Plus | ✓ Supported |
-| 5 | 256KB | Advanced | ✓ Supported |
-| 6 | 256KB | Graphics | Partial |
-| 7 | 320KB | Extended | Partial |
-| 8 | 512KB | Large | ✓ Supported |
-
-### Opcode Coverage
-
-Currently implements core opcodes for:
-- Control flow (call, return, jump, branch)
-- Memory access (load, store, loadw, loadb)
-- Object manipulation (get/set attributes, insert, remove)
-- Text I/O (print, read, output streams)
-- Arithmetic and logic operations
-- Stack operations (push, pop)
-- Game state (save, restore, restart, quit)
-
-## Limitations
-
-- Graphics opcodes (V6) are not fully implemented
-- Sound effects are stubbed
-- Some extended opcodes may not work correctly
-- Mouse input not supported
-
-## Future Enhancements
-
-- Complete V6 graphics support
-- Blorb file support for resources
-- Debugger interface
-- Optimization passes for generated code
-- TypeScript output option
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) - compile and run a game in two steps
+- [docs/INSTALL.md](docs/INSTALL.md) - installing from PyPI or from source
+- [docs/RUNNING.md](docs/RUNNING.md) - browser play, Node.js usage (including use as a module), tested games
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - project structure, components, runtime features, Z-machine version support, opcode coverage, limitations, future enhancements
+- [docs/TRANSCRIPT.md](docs/TRANSCRIPT.md) - transcript recording
+- [docs/z-machine-version-notes.md](docs/z-machine-version-notes.md) - version-specific encoding notes
+- [docs/TODO.md](docs/TODO.md) - remaining work
+- [CHANGELOG.md](CHANGELOG.md) - what changed in each version
 
 ## License
 
