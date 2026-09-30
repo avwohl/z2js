@@ -16,7 +16,7 @@ A Python compiler that converts Z-machine story files (.z1-.z8) to playable Java
 pip install z2js
 ```
 
-For development or from source, see [INSTALL.md](docs/INSTALL.md).
+For development or from source, see [INSTALL.md](https://github.com/avwohl/z2js/blob/main/docs/INSTALL.md).
 
 ## Usage
 
@@ -51,14 +51,14 @@ Open `game.html` in a browser, or run `node game.js` in a terminal.
 
 ## Documentation
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) - compile and run a game in two steps
-- [docs/INSTALL.md](docs/INSTALL.md) - installing from PyPI or from source
-- [docs/RUNNING.md](docs/RUNNING.md) - browser play, Node.js usage (including use as a module), tested games
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - project structure, components, runtime features, Z-machine version support, opcode coverage, limitations, future enhancements
-- [docs/TRANSCRIPT.md](docs/TRANSCRIPT.md) - transcript recording
-- [docs/z-machine-version-notes.md](docs/z-machine-version-notes.md) - version-specific encoding notes
-- [docs/TODO.md](docs/TODO.md) - remaining work
-- [CHANGELOG.md](CHANGELOG.md) - what changed in each version
+- [docs/QUICKSTART.md](https://github.com/avwohl/z2js/blob/main/docs/QUICKSTART.md) - compile and run a game in two steps
+- [docs/INSTALL.md](https://github.com/avwohl/z2js/blob/main/docs/INSTALL.md) - installing from PyPI or from source
+- [docs/RUNNING.md](https://github.com/avwohl/z2js/blob/main/docs/RUNNING.md) - browser play, Node.js usage (including use as a module), tested games
+- [docs/ARCHITECTURE.md](https://github.com/avwohl/z2js/blob/main/docs/ARCHITECTURE.md) - project structure, components, runtime features, Z-machine version support, opcode coverage, limitations, future enhancements
+- [docs/TRANSCRIPT.md](https://github.com/avwohl/z2js/blob/main/docs/TRANSCRIPT.md) - transcript recording
+- [docs/z-machine-version-notes.md](https://github.com/avwohl/z2js/blob/main/docs/z-machine-version-notes.md) - version-specific encoding notes
+- [docs/TODO.md](https://github.com/avwohl/z2js/blob/main/docs/TODO.md) - remaining work
+- [CHANGELOG.md](https://github.com/avwohl/z2js/blob/main/CHANGELOG.md) - what changed in each version
 
 ## License
 
